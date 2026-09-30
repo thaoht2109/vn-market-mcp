@@ -8,7 +8,7 @@ extra_tickers:
 
 coverage:
   min_price_history_days: 500
-  min_avg_liquidity_value_20d: 5.0e9
+  min_avg_liquidity_value_20d: 5.0e+9
   min_fundamental_quarters: 4
   min_weight_coverage: 0.70
 
