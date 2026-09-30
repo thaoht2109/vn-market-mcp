@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -12,7 +12,7 @@ import psycopg
 import yaml
 
 from pipeline.action_label import ActionLabelConfig, ActionLabelInput, action_label
-from pipeline.calendar import latest_trading_day
+from pipeline.calendar import calendar_covers, latest_trading_day
 from pipeline.coverage import (
     CoverageConfig,
     UnknownTickerError,
@@ -171,7 +171,18 @@ def run_analysis(
     if volume_check.result == "warn":
         warnings.append(str(volume_check.detail))
 
-    freshness_check = check_freshness(now, trading_date)
+    # latest_trading_day(conn, now) is always <= now.date() by construction,
+    # so check_freshness(now, trading_date) alone can never fire — it's
+    # comparing now against a date derived from now. calendar_covers checks
+    # whether trading_calendar was actually seeded through today, which is
+    # the real thing that can go stale (needs yearly re-seeding).
+    if not calendar_covers(conn, now.date()):
+        # Calendar wasn't re-seeded through today: force check_freshness to
+        # warn by feeding it a "latest official trading day" one day ahead
+        # of as_of, since we have no real one to compare against.
+        freshness_check = check_freshness(now, now.date() + timedelta(days=1))
+    else:
+        freshness_check = check_freshness(now, trading_date)
     log_check(conn, run_id, ticker, freshness_check)
     data_stale = freshness_check.result != "pass"
     if data_stale:

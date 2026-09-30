@@ -60,6 +60,22 @@ def latest_trading_day(conn: psycopg.Connection, as_of: datetime) -> date:
     return row[0]
 
 
+def calendar_covers(conn: psycopg.Connection, as_of: date) -> bool:
+    """Whether trading_calendar has been seeded up to (or past) as_of.
+
+    latest_trading_day(conn, now) always returns a date <= now.date() by
+    construction, so comparing that result back against `now` can never
+    detect a calendar that simply hasn't been re-seeded for the current
+    year (see module docstring re: yearly re-seeding). This checks the
+    table's actual max row instead, which is independent of `as_of`.
+    """
+    row = conn.execute("SELECT max(trade_date) FROM trading_calendar").fetchone()
+    max_date = row[0] if row else None
+    if max_date is None:
+        return False
+    return max_date >= as_of
+
+
 def next_trading_day(conn: psycopg.Connection, d: date) -> date:
     row = conn.execute(
         """

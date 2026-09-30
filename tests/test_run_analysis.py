@@ -9,7 +9,9 @@ from providers.vnstock_provider import ForeignFlowRecord, FundamentalRecord, Pri
 from tests.conftest import insert_ticker
 
 
-def _seed_env(db_conn, ticker="VNM", exchange="HOSE", industry_group="other", history_days=520):
+def _seed_env(
+    db_conn, ticker="VNM", exchange="HOSE", industry_group="other", history_days=520, calendar_lag_days=0
+):
     insert_ticker(db_conn, ticker, industry_group=industry_group, exchange=exchange)
     db_conn.execute(
         "INSERT INTO index_membership (index_code, ticker, valid_from, valid_to) VALUES ('VN30', %s, %s, NULL)",
@@ -17,14 +19,15 @@ def _seed_env(db_conn, ticker="VNM", exchange="HOSE", industry_group="other", hi
     )
 
     today = datetime.now(timezone.utc).date()
-    seed_calendar_from_weekdays(db_conn, today - timedelta(days=history_days * 2), today, holidays=set())
+    calendar_end = today - timedelta(days=calendar_lag_days)
+    seed_calendar_from_weekdays(db_conn, today - timedelta(days=history_days * 2), calendar_end, holidays=set())
 
     trading_days = [
         row[0]
         for row in db_conn.execute(
             "SELECT trade_date FROM trading_calendar WHERE is_trading_day = true AND trade_date <= %s"
             " ORDER BY trade_date DESC LIMIT %s",
-            (today, history_days),
+            (calendar_end, history_days),
         ).fetchall()
     ]
     trading_days.reverse()  # oldest first; last element is the most recent trading day
@@ -125,6 +128,26 @@ def test_run_analysis_unknown_ticker_is_rejected(db_conn, tmp_path):
 
     run_count = db_conn.execute("SELECT count(*) FROM runs").fetchone()[0]
     assert run_count == 0
+
+
+def test_run_analysis_flags_stale_calendar_not_reseeded_for_today(db_conn, tmp_path):
+    # Regression: latest_trading_day(conn, now) is always <= now.date() by
+    # construction, so feeding it straight back into check_freshness(now, ...)
+    # can never fire — it was comparing now against a date derived from now.
+    # A trading_calendar that was never re-seeded past a stale cutoff (the
+    # real risk: nobody ran the yearly re-seed) must now be caught.
+    latest_day, latest_close = _seed_env(db_conn, "VNM", calendar_lag_days=10)
+    provider = _StubProvider(latest_day, latest_close)
+
+    result = run_analysis(db_conn, provider, "VNM", tmp_path)
+
+    assert result.status == "ok"
+    freshness_row = db_conn.execute(
+        "SELECT result FROM data_quality_log WHERE run_id = %s AND check_name = 'freshness'",
+        (result.run_id,),
+    ).fetchone()
+    assert freshness_row is not None
+    assert freshness_row[0] == "warn"
 
 
 def test_run_analysis_insufficient_coverage_writes_run_but_no_prediction(db_conn, tmp_path):
