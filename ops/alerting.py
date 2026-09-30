@@ -10,7 +10,7 @@ import httpx
 
 logger = logging.getLogger("vn-market-mcp")
 if not logger.handlers:
-    handler = logging.StreamHandler(sys.stdout)
+    handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)

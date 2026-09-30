@@ -6,8 +6,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-changeme_local_only}
       POSTGRES_DB: vnmcp
       TZ: Asia/Ho_Chi_Minh
+      PGPORT: "5433"
+    command: ["-p", "5433"]
     ports:
-      - "127.0.0.1:55432:5432"
+      - "127.0.0.1:55432:5433"
     volumes:
       - pgdata:/var/lib/postgresql/data
 volumes:

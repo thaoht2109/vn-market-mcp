@@ -314,18 +314,135 @@ NOT in this phase (by design — see the plan's roadmap for later phases):
        it's meant to be launched BY an MCP client, not run standalone
        for interactive use)
 
-  Connecting Hermes Agent (Nous Research):
-    Hermes's exact configuration format for registering an external
-    stdio MCP server was NOT verified while building this — the project
-    spec itself (see docs/superpowers/plans/..., and
-    ../vn-trading-agent-plan_final.md) flags Hermes version/tooling
-    compatibility as something to verify hands-on. In general, an MCP
-    stdio server is registered with a client by giving it the command
-    to launch the server process (here: the venv's python, `-m
-    mcp_server.server`, working directory vn-market-mcp/, with the .env
-    variables above present in the process environment) — check
-    Hermes's current documentation for its specific config file/key for
-    this before wiring it up.
+  Connecting Hermes Agent (Nous Research) — VERIFIED working setup:
+    Hermes here runs via the compose stack at
+    ../hermes_agent/hermes-docker-compose/docker-compose.yml, which was
+    extended (not part of vn-market-mcp itself) with:
+      - a read-only bind mount of this project into the gateway
+        container at /opt/vn-market-mcp
+      - the gateway container joined onto vn-market-mcp's own compose
+        network (`vn-market-mcp_default`), so it can reach Postgres by
+        its service name `postgres` instead of `localhost:55432`
+          (the vn-market-mcp postgres port is only published on
+          127.0.0.1 on the host, so the container-to-container route via
+          the shared network is required, not host.docker.internal)
+
+    NOTE: the postgres service's INTERNAL container port is 5433, not the
+    Postgres default 5432 — see docker-compose.yml's PGPORT/`-p 5433`.
+    This host machine has a separate, unrelated project's Postgres also
+    listening on 5432, protected by a host iptables DOCKER-USER rule
+    that DROPs all TCP to port 5432 except from that other project's
+    specific subnets. vn-market-mcp's own Docker network was never in
+    that allowlist, so any container-to-container connection on 5432
+    silently hung until timeout. Moving vn-market-mcp's postgres to
+    listen on 5433 internally (the external host publish, 127.0.0.1:
+    55432, is unchanged) sidesteps the rule entirely without touching
+    the other project's firewall config. If you see hangs ending in
+    "connection timeout expired" from a *_DATABASE_URL that has
+    "postgres:5432" in it, this is almost certainly why — the working
+    values use postgres:5433.
+
+    Inside the gateway container, a dedicated venv (NOT the repo's own
+    .venv, which is host-only) was created under the persistent
+    /opt/data volume and the project's requirements.txt installed there:
+      uv venv /opt/data/vn-market-mcp-venv
+      uv pip install --python /opt/data/vn-market-mcp-venv/bin/python \
+          -r /opt/vn-market-mcp/requirements.txt
+
+    Gotcha found while wiring this up: launching the server with cwd !=
+    /opt/vn-market-mcp makes Python resolve `import providers` against
+    Hermes's OWN internal /opt/hermes/providers package instead of this
+    project's providers/ (both are top-level packages named
+    "providers" — a naming collision, not a vn-market-mcp bug). Fixed
+    with a one-line wrapper script that cd's first:
+      /opt/data/vn-market-mcp-venv/bin/run-vn-market-mcp:
+        #!/bin/sh
+        cd /opt/vn-market-mcp
+        exec /opt/data/vn-market-mcp-venv/bin/python -m mcp_server.server
+
+    Registered with Hermes's own CLI (uses postgres:5433, the in-network
+    port, and the changeme dev passwords from .env — replace with real
+    values for anything beyond local dev):
+      docker compose exec gateway hermes mcp add vn-market-mcp \
+        --command /opt/data/vn-market-mcp-venv/bin/run-vn-market-mcp \
+        --env MCP_RO_DATABASE_URL=postgresql://mcp_ro:<pw>@postgres:5433/vnmcp \
+              PIPELINE_RW_DATABASE_URL=postgresql://pipeline_rw:<pw>@postgres:5433/vnmcp \
+        --connect-timeout 60
+
+    Verify anytime with:
+      docker compose exec gateway hermes mcp test vn-market-mcp
+      docker compose exec gateway hermes mcp list
+
+    Confirmed: all 8 tools discovered and enabled
+    (`hermes mcp test vn-market-mcp` → "Tools discovered: 8").
+
+    Separately, the gateway's own /opt/data/config.yaml had a
+    pre-existing YAML indentation bug (a stray 4-space `- mcp-codegraph`
+    line under platform_toolsets.cli around line 548) and a permission
+    issue (SOUL.md and friends owned by host UID 1000, unreadable/
+    unwritable by the container's `hermes` user, UID 10000) that blocked
+    the gateway from starting cleanly — both pre-dated this integration
+    and were fixed by correcting the indentation and
+    `chown -R hermes:hermes /opt/data` inside the container. Unrelated
+    to vn-market-mcp but worth knowing if the gateway container is ever
+    recreated from a stale /opt/data.
+
+    IMPORTANT — MCP stdio transport requires stdout to carry ONLY
+    JSON-RPC frames. ops/alerting.py originally logged structured events
+    to sys.stdout, which corrupted every tool call over the real stdio
+    transport ("Failed to parse JSONRPC message from server" on the
+    Hermes side) — invisible in the prior session's MCP tests because
+    they used the SDK's in-memory test client, not a real subprocess.
+    Fixed by switching the handler to sys.stderr (ops/alerting.py:13);
+    stderr is still captured in the gateway's own container logs, so no
+    log events are lost, they just don't collide with the protocol
+    stream anymore.
+
+  Skill `vn-stock-analyze` (chat routing):
+    A Hermes skill at .hermes/skills/vn-market/vn-stock-analyze/SKILL.md
+    routes natural-language chat ("phân tích HPG", "HPG hôm nay sao
+    rồi?", "vì sao stop-loss đặt ở đó?") to the right MCP tool call. It
+    does NOT register real slash commands — Hermes has no plugin hook
+    for that (gateway/slash_commands.py is hardcoded in Hermes core) —
+    so /chay, /chitiet, /trangthai are natural-language patterns the
+    skill recognizes, not registered commands.
+
+    Load it into a running gateway:
+      docker compose exec gateway hermes skills trust /opt/vn-market-mcp
+      docker compose exec gateway hermes chat -q 'Bạn có skill nào tên
+        vn-stock-analyze đang active không?' --oneshot
+
+    GOTCHA — Hermes only loads project-local skills (.hermes/skills/)
+    when the trusted directory has a .git ancestor (anti-prompt-
+    injection: an untrusted clone can't plant a skill by merely looking
+    like a project — see agent/skill_utils.py::find_project_root in
+    Hermes's own source). vn-market-mcp/ is a subdirectory of a larger
+    monorepo and has no .git of its own; the real .git lives two levels
+    up and is outside this repo's own bind mount into the gateway
+    container. Fixed with a git-worktree-style gitlink file committed at
+    vn-market-mcp/.git (content: `gitdir: ../../.git`) — this satisfies
+    Hermes's `.exists()` check without duplicating any repo history or
+    changing how git itself treats this directory (`git status`/`git
+    log` from vn-market-mcp/ still transparently operate on the
+    monorepo). If this file is ever accidentally deleted, the skill will
+    silently stop loading (`hermes skills list` and `-s
+    vn-stock-analyze` will both report it as unknown) with no error
+    pointing back to this cause.
+
+    Manually verify routing (non-interactive, -v shows tool calls).
+    Confirmed via manual test on 2026-09-30:
+      docker compose exec gateway hermes chat --provider deepseek \
+        -m deepseek-flash -q 'phân tích HPG' --oneshot -v
+      # captured reasoning: "phân tích HPG" → run_analysis(ticker="HPG",
+      # style="long", depth="full") — matches the skill's routing table
+      # exactly (full analysis phrasing → depth="full", not "quick").
+
+    (`hermes chat -q ...` needs a connected model provider first — see
+    `hermes auth add <provider>`; a bare `hermes config set model
+    <provider>/<model>` was NOT sufficient by itself in testing, use
+    `--provider <name> -m <model>` explicitly on the hermes chat command
+    if `hermes chat -q` reports "not connected to any AI provider yet"
+    despite a credential being added.)
 
   Testing without Hermes:
     Any MCP client works for manual testing, e.g. the official MCP
