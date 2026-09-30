@@ -73,27 +73,87 @@ def summarize(model_id: str, results: list[dict]) -> ModelSummary:
     )
 
 
-def _call_model(client, model_id: str, prompt: str) -> tuple[str, float]:
-    start = time.time()
+# provider -> (env var giữ base_url, giá trị mặc định nếu env var trống)
+# ponytail: chỉ hỗ trợ provider OpenAI-compatible; provider khác (Gemini, Grok...) báo "chưa hỗ trợ"
+OPENAI_COMPATIBLE_PROVIDERS = {
+    "deepseek": ("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+    "ollama": ("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+}
+
+SUPPORTED_PROVIDERS = {"anthropic", *OPENAI_COMPATIBLE_PROVIDERS}
+
+
+class UnsupportedProviderError(Exception):
+    pass
+
+
+def _call_anthropic(client, model_id: str, prompt: str) -> str:
     response = client.messages.create(
         model=model_id, max_tokens=200, messages=[{"role": "user", "content": prompt}]
     )
+    return response.content[0].text
+
+
+def _call_openai_compatible(client, model_id: str, prompt: str) -> str:
+    response = client.chat.completions.create(
+        model=model_id, max_tokens=200, messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content
+
+
+def _make_client(provider: str):
+    if provider == "anthropic":
+        import anthropic
+
+        return anthropic.Anthropic()
+    if provider in OPENAI_COMPATIBLE_PROVIDERS:
+        import os
+
+        import openai
+
+        env_var, default_url = OPENAI_COMPATIBLE_PROVIDERS[provider]
+        base_url = os.environ.get(env_var, default_url)
+        api_key = os.environ.get(f"{provider.upper()}_API_KEY", "ollama")  # ollama không cần key thật
+        return openai.OpenAI(base_url=base_url, api_key=api_key)
+    raise UnsupportedProviderError(
+        f"provider '{provider}' chua duoc ho tro. Provider ho tro: {sorted(SUPPORTED_PROVIDERS)}"
+    )
+
+
+def _call_model(client, provider: str, model_id: str, prompt: str) -> tuple[str, float]:
+    start = time.time()
+    if provider == "anthropic":
+        raw_text = _call_anthropic(client, model_id, prompt)
+    elif provider in OPENAI_COMPATIBLE_PROVIDERS:
+        raw_text = _call_openai_compatible(client, model_id, prompt)
+    else:
+        raise UnsupportedProviderError(
+            f"provider '{provider}' chua duoc ho tro. Provider ho tro: {sorted(SUPPORTED_PROVIDERS)}"
+        )
     latency_ms = (time.time() - start) * 1000
-    return response.content[0].text, latency_ms
+    return raw_text, latency_ms
 
 
 def main() -> None:
-    import anthropic
-
-    client = anthropic.Anthropic()
     golden = load_golden_set()
-    models = ["claude-haiku-4-5-20251001", "claude-sonnet-5-5", "claude-opus-5-5"]
+    # (provider, model_id) - them dong moi de test model/provider khac
+    targets = [
+        ("anthropic", "claude-haiku-4-5-20251001"),
+        ("anthropic", "claude-sonnet-5-5"),
+        ("anthropic", "claude-opus-5-5"),
+        ("deepseek", "deepseek-chat"),
+        ("ollama", "llama3.1"),
+    ]
 
-    for model_id in models:
+    clients: dict[str, object] = {}
+    for provider, model_id in targets:
+        if provider not in clients:
+            clients[provider] = _make_client(provider)
+        client = clients[provider]
         results = []
         for item in golden:
             prompt = build_prompt(item)
-            raw_text, latency_ms = _call_model(client, model_id, prompt)
+            raw_text, latency_ms = _call_model(client, provider, model_id, prompt)
             entry = {"latency_ms": latency_ms, "cost_usd": 0.0}
             try:
                 predicted = parse_response(raw_text)
@@ -106,8 +166,8 @@ def main() -> None:
 
         summary = summarize(model_id, results)
         print(
-            f"{model_id}: accuracy={summary.accuracy:.0%} schema_invalid={summary.schema_invalid}/{summary.n} "
-            f"avg_latency={summary.avg_latency_ms:.0f}ms"
+            f"[{provider}] {model_id}: accuracy={summary.accuracy:.0%} "
+            f"schema_invalid={summary.schema_invalid}/{summary.n} avg_latency={summary.avg_latency_ms:.0f}ms"
         )
 
 

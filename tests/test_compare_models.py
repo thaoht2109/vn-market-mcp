@@ -2,6 +2,8 @@ import pytest
 
 from evals.compare_models import (
     SchemaError,
+    UnsupportedProviderError,
+    _make_client,
     build_prompt,
     parse_response,
     score_prediction,
@@ -51,3 +53,13 @@ def test_summarize_computes_accuracy_and_cost():
     assert summary.schema_invalid == 1
     assert summary.total_cost_usd == pytest.approx(0.02)
     assert summary.avg_latency_ms == 600
+
+
+def test_make_client_rejects_unsupported_provider():
+    with pytest.raises(UnsupportedProviderError):
+        _make_client("gemini")
+
+
+def test_make_client_accepts_deepseek_and_ollama():
+    assert _make_client("deepseek") is not None
+    assert _make_client("ollama") is not None

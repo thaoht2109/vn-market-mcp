@@ -326,6 +326,7 @@ if __name__ == "__main__":
     import argparse
 
     from db.connection import get_conn
+    from ops.alerting import log_event, send_ops_alert
     from providers.vnstock_provider import VNStockProvider
 
     parser = argparse.ArgumentParser(description="Run the Phase 0 pipeline for one ticker (on-demand).")
@@ -334,9 +335,20 @@ if __name__ == "__main__":
     parser.add_argument("--depth", default="quick")
     args = parser.parse_args()
 
-    with get_conn() as conn:
-        result = run_analysis(
-            conn, VNStockProvider(source="VCI"), args.ticker, Path("snapshots"),
-            style=args.style, depth=args.depth,
-        )
+    log_event("run_started", ticker=args.ticker, style=args.style, depth=args.depth)
+    try:
+        with get_conn() as conn:
+            result = run_analysis(
+                conn, VNStockProvider(source="VCI"), args.ticker, Path("snapshots"),
+                style=args.style, depth=args.depth,
+            )
+        if result.status == "ok":
+            log_event("run_finished", ticker=args.ticker, status=result.status, action_label=result.action_label)
+        else:
+            log_event("run_finished_with_issue", ticker=args.ticker, status=result.status, message=result.message)
+            send_ops_alert(f"[vn-market-mcp] {args.ticker}: {result.status} — {result.message}")
         print(result)
+    except Exception as exc:
+        log_event("run_failed", ticker=args.ticker, error=str(exc), error_type=type(exc).__name__)
+        send_ops_alert(f"[vn-market-mcp] LỖI khi chạy {args.ticker}: {type(exc).__name__}: {exc}")
+        raise
