@@ -12,6 +12,8 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config" / "vn-rules.yaml"
 
 def _load_price_unit_scale() -> dict[str, float]:
     cfg = yaml.safe_load(_CONFIG_PATH.read_text())
+    if "price_unit_scale" not in cfg:
+        raise ValueError(f"{_CONFIG_PATH} is missing required key 'price_unit_scale'")
     return cfg["price_unit_scale"]
 
 
@@ -111,7 +113,7 @@ class VNStockProvider:
                     low=normalize_price_unit(row["low"], self.source, self.scale_map),
                     close=normalize_price_unit(row["close"], self.source, self.scale_map),
                     volume=int(row["volume"]),
-                    value=row.get("value"),
+                    value=normalize_price_unit(row["value"], self.source, self.scale_map) if row.get("value") is not None else None,
                     source=self.source,
                     fetched_at=fetched_at,
                 )

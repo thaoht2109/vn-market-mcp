@@ -38,7 +38,17 @@ class _FakeClient:
 
 def test_get_ohlcv_normalizes_and_returns_pricebars():
     df = pd.DataFrame(
-        [{"time": "2026-09-25", "open": 84.0, "high": 85.0, "low": 83.5, "close": 84.5, "volume": 1_000_000}]
+        [
+            {
+                "time": "2026-09-25",
+                "open": 84.0,
+                "high": 85.0,
+                "low": 83.5,
+                "close": 84.5,
+                "volume": 1_000_000,
+                "value": 84.2,
+            }
+        ]
     )
     provider = VNStockProvider(source="TCBS", client=_FakeClient(df), scale_map={"TCBS": 1000})
 
@@ -50,4 +60,16 @@ def test_get_ohlcv_normalizes_and_returns_pricebars():
     assert bar.trade_date == date(2026, 9, 25)
     assert bar.close == 84500
     assert bar.high == 85000
+    assert bar.value == 84200
     assert bar.source == "TCBS"
+
+
+def test_get_ohlcv_missing_value_field_stays_none():
+    df = pd.DataFrame(
+        [{"time": "2026-09-25", "open": 84.0, "high": 85.0, "low": 83.5, "close": 84.5, "volume": 1_000_000}]
+    )
+    provider = VNStockProvider(source="TCBS", client=_FakeClient(df), scale_map={"TCBS": 1000})
+
+    bars = provider.get_ohlcv("VNM", date(2026, 9, 25), date(2026, 9, 25))
+
+    assert bars[0].value is None
