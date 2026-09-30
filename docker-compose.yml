@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: vnmcp_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-changeme_local_only}
+      POSTGRES_DB: vnmcp
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
