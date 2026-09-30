@@ -53,6 +53,9 @@ Implementation plan: ../docs/superpowers/plans/2026-09-30-vn-trading-agent-phase
   ops/backup.sh, restore_test.sh  pg_dump backup + restore drill
   ops/alerting.py                 structured JSON-line logging + Telegram
                                    alert to the ops group on job failure
+  mcp_server/                     MCP protocol server (stdio) exposing 8
+                                   tools to Hermes/any MCP client — see
+                                   section 13
   evals/compare_models.py         golden-sample harness for comparing Claude
                                    models on news-classification quality
 
@@ -62,7 +65,6 @@ NOT in this phase (by design — see the plan's roadmap for later phases):
   - Any LLM-backed role (news, macro, synthesis, Bull/Bear)
   - Prediction grading / forward-test scoring
   - Data retention / archival jobs
-  - MCP server tool registration (this project is a CLI for now)
 
 
 3. REQUIREMENTS
@@ -276,7 +278,62 @@ NOT in this phase (by design — see the plan's roadmap for later phases):
   exceptions.
 
 
-11. PROJECT HISTORY
+13. MCP SERVER (for Hermes Agent / any MCP client)
+-------------------------------------------------------
+  mcp_server/ exposes 8 tools over the standard MCP protocol (stdio
+  transport): run_analysis, get_snapshot, query_history, explain_run,
+  list_predictions, get_stats, set_position, clear_position.
+
+  These are thin wrappers around the same pipeline/ code the CLI uses —
+  no new business logic lives here. Read-only tools connect to Postgres
+  as the mcp_ro role (SELECT-only); run_analysis/set_position/
+  clear_position connect as pipeline_rw. No tool in this server calls
+  the Anthropic/Claude API — the LLM-role tools from the spec
+  (analyze_news, synthesize, bull_case, bear_case, ...) are not built
+  yet (see section 10, Known Limitations).
+
+  IMPORTANT: run_analysis here calls the existing pipeline SYNCHRONOUSLY
+  and blocks until the run finishes. The full spec describes an async
+  job_id + background worker that pushes results via Telegram — that
+  worker does not exist in this codebase yet. A client calling this
+  tool should expect it to block for the duration of one full pipeline
+  run (typically a few seconds to a couple minutes, not fast if
+  vnstock is slow).
+
+  Setup:
+    1. Add to .env (see .env.example):
+         MCP_RO_DATABASE_URL=postgresql://mcp_ro:<MCP_RO_PASSWORD>@localhost:55432/vnmcp
+         PIPELINE_RW_DATABASE_URL=postgresql://pipeline_rw:<PIPELINE_RW_PASSWORD>@localhost:55432/vnmcp
+       (passwords must match what db/setup_roles.py set for those roles —
+       i.e. the same MCP_RO_PASSWORD / PIPELINE_RW_PASSWORD values.)
+    2. .venv/bin/pip install -r requirements.txt   (installs the mcp SDK)
+    3. Run the server directly to sanity-check it starts:
+         export $(cat .env | xargs)
+         .venv/bin/python -m mcp_server.server
+       (it will sit waiting on stdio — Ctrl+C to stop; this is normal,
+       it's meant to be launched BY an MCP client, not run standalone
+       for interactive use)
+
+  Connecting Hermes Agent (Nous Research):
+    Hermes's exact configuration format for registering an external
+    stdio MCP server was NOT verified while building this — the project
+    spec itself (see docs/superpowers/plans/..., and
+    ../vn-trading-agent-plan_final.md) flags Hermes version/tooling
+    compatibility as something to verify hands-on. In general, an MCP
+    stdio server is registered with a client by giving it the command
+    to launch the server process (here: the venv's python, `-m
+    mcp_server.server`, working directory vn-market-mcp/, with the .env
+    variables above present in the process environment) — check
+    Hermes's current documentation for its specific config file/key for
+    this before wiring it up.
+
+  Testing without Hermes:
+    Any MCP client works for manual testing, e.g. the official MCP
+    Inspector (`npx @modelcontextprotocol/inspector .venv/bin/python -m
+    mcp_server.server`), or the SDK's Python client directly.
+
+
+14. PROJECT HISTORY
 -----------------------
   Built task-by-task via subagent-driven development against the plan at
   ../docs/superpowers/plans/2026-09-30-vn-trading-agent-phase-0-1.md.
