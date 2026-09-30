@@ -7,12 +7,15 @@ import pytest
 
 from db.migrate import apply_migrations
 
-DATABASE_URL = os.environ["DATABASE_URL"]
+DATABASE_URL = os.environ.get("DATABASE_URL")
 MIGRATIONS_DIR = Path(__file__).parent.parent / "db" / "migrations"
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _migrated_schema():
+    if DATABASE_URL is None:
+        # Skip database setup if DATABASE_URL not set (for tests that don't need DB)
+        return
     conn = psycopg.connect(DATABASE_URL, autocommit=True)
     apply_migrations(conn, MIGRATIONS_DIR)
     conn.close()
