@@ -1,0 +1,13 @@
+# Keep secrets and bulky/local-only paths out of the image (COPY . . in Dockerfile).
+# .env is passed to containers by docker compose via `environment:`; nothing reads the file itself.
+.env
+.venv
+.git
+.claude
+.codegraph
+.code-review-graph
+.pytest_cache
+__pycache__
+*.pyc
+# bind-mounted at runtime (docker-compose.yml worker: ./snapshots:/app/snapshots)
+snapshots
