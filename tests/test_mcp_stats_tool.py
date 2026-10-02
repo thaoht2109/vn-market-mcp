@@ -1,9 +1,20 @@
+import os
+
 import pytest
 
 from db.connection import get_conn
 from mcp_server.tools.stats import get_stats_tool
 
 
+def _is_dedicated_test_database() -> bool:
+    return os.environ.get("DATABASE_URL", "").rsplit("/", 1)[-1].split("?")[0].endswith("_test")
+
+
+@pytest.mark.skipif(
+    not _is_dedicated_test_database(),
+    reason="wipes ALL runs/predictions — only safe on a dedicated *_test database, never the live one "
+    "(running it against the live DB on 2026-10-02 deleted real runs and predictions)",
+)
 def test_get_stats_on_empty_database_returns_zeroed_counts():
     with get_conn() as conn:
         conn.execute("DELETE FROM predictions")

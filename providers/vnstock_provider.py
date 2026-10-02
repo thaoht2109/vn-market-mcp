@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import yaml
 
 _CONFIG_PATH = Path(__file__).parent.parent / "config" / "vn-rules.yaml"
@@ -30,7 +32,46 @@ def normalize_price_unit(value: float, source: str, scale_map: dict[str, float])
     return value * scale
 
 
+# vnstock.api.financial.Finance.ratio()'s item_en values, verified against
+# real VCI data for VCB/SSI/BVH (2026-10-01): the Community tier returns the
+# SAME fixed set of ~50 ratio rows for every ticker regardless of industry —
+# there is no per-industry schema (no brokerage/insurance/real-estate-specific
+# fields at all). Map the real labels to the snake_case keys the rest of the
+# codebase (pipeline/fundamentals.py's METRIC_SET, run_analysis.py) expects;
+# anything not in this map is dropped, so code also sees a snake_case key
+# and never silently looks up the wrong label.
+_FUNDAMENTAL_METRIC_ALIASES: dict[str, str] = {
+    "P/E": "pe",
+    "P/B": "pb",
+    "ROE (%)": "roe",
+    "ROA (%)": "roa",
+    "Gross Margin (%)": "gross_margin",
+    "Debt/Equity": "debt_to_equity",
+    "Loans Growth (%)": "credit_growth",
+    "Net Interest Margin": "nim",
+    "NPL (%)": "npl_ratio",
+    "CASA Ratio": "casa_ratio",
+}
+
+
+_QUARTER_PERIOD = re.compile(r"\d{4}-Q[1-4]")
+_ALL_PERIODS = 100_000  # larger than any listing's quarter count
+
+
+def _normalize_fundamental_metrics(raw_metrics: dict[Any, Any]) -> dict[str, Any]:
+    return {
+        _FUNDAMENTAL_METRIC_ALIASES[key]: value
+        for key, value in raw_metrics.items()
+        if key in _FUNDAMENTAL_METRIC_ALIASES
+    }
+
+
 def _to_date(value: Any) -> date:
+    # pandas.Timestamp subclasses datetime.date, so an isinstance(value, date)
+    # check alone would match it and return the Timestamp unchanged instead
+    # of a plain date — check datetime (Timestamp's actual base) first.
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
     return datetime.fromisoformat(str(value)[:10]).date()
@@ -84,26 +125,86 @@ class CorporateEvent:
     fetched_at: datetime
 
 
-class VNStockProvider:
-    """Thin wrapper around the vnstock library. Accepts an injected client for
-    testing; defaults to a real vnstock client when none is given."""
+@dataclass
+class NewsItem:
+    ticker: str
+    published_at: datetime
+    source: str
+    url: str | None
+    title: str
+    summary: str | None
+    fetched_at: datetime
 
-    def __init__(self, source: str = "VCI", client: Any = None, scale_map: dict[str, float] | None = None):
+
+class VNStockProvider:
+    """Thin wrapper around vnstock.api (the post-2025-08-31 API; the old
+    Vnstock().stock(...).quote/finance/trading/company facade is deprecated
+    and removed in vnstock>=4). Each vnstock.api class is instantiated
+    per-call with source+symbol, so there is no single shared client to
+    inject — tests inject a fake per-domain client via the `clients` dict
+    instead (see get_ohlcv/get_fundamentals/get_corporate_events)."""
+
+    def __init__(self, source: str = "VCI", clients: dict[str, Any] | None = None, scale_map: dict[str, float] | None = None):
         self.source = source
         self.scale_map = scale_map or _load_price_unit_scale()
-        if client is not None:
-            self._client = client
-        else:
-            from vnstock import Vnstock  # lazy import: tests never need vnstock/network
+        self._clients = clients or {}
 
-            self._client = Vnstock()
+    def _quote(self, ticker: str) -> Any:
+        if "quote" in self._clients:
+            return self._clients["quote"]
+        from vnstock.api.quote import Quote  # lazy import: tests never need vnstock/network
+
+        return Quote(symbol=ticker, source=self.source)
+
+    def _finance(self, ticker: str) -> Any:
+        if "finance" in self._clients:
+            return self._clients["finance"]
+        # The VCI explorer class, not vnstock.api.financial.Finance: the public
+        # ratio() can't take a limit (see get_fundamentals for why it must).
+        from vnstock.explorer.vci.financial import Finance
+
+        return Finance(symbol=ticker, period="quarter")
+
+    def _company(self, ticker: str) -> Any:
+        if "company" in self._clients:
+            return self._clients["company"]
+        from vnstock.api.company import Company
+
+        return Company(source=self.source, symbol=ticker)
+
+    def _trading(self) -> Any:
+        if "trading" in self._clients:
+            return self._clients["trading"]
+        from vnstock.api.trading import Trading
+
+        # Foreign flow fields (foreign_buy_volume/foreign_sell_volume/foreign_room)
+        # only exist on the KBS price board, not VCI — independent of self.source.
+        return Trading(source="KBS")
+
+    def get_market_index(self, symbol: str, start: date, end: date) -> pd.DataFrame:
+        """OHLCV for a market index (e.g. VNINDEX), for pipeline.regime.
+
+        Returns the raw vnstock frame unscaled — normalize_price_unit's
+        per-source VND scale factor (×1000 for VCI) doesn't apply to an
+        index's point value, unlike get_ohlcv's per-ticker VND prices.
+        """
+        raw = self._quote(symbol).history(symbol=symbol, start=start.isoformat(), end=end.isoformat())
+        return raw.rename(columns={"time": "trade_date"})
 
     def get_ohlcv(self, ticker: str, start: date, end: date) -> list[PriceBar]:
         fetched_at = datetime.now(timezone.utc)
-        stock = self._client.stock(symbol=ticker, source=self.source)
-        raw = stock.quote.history(start=start.isoformat(), end=end.isoformat())
+        raw = self._quote(ticker).history(symbol=ticker, start=start.isoformat(), end=end.isoformat())
         bars = []
         for row in raw.to_dict("records"):
+            close = normalize_price_unit(row["close"], self.source, self.scale_map)
+            volume = int(row["volume"])
+            # vnstock.api.quote.Quote.history() doesn't return a traded-value
+            # column at all (unlike the old API) — approximate it as close*volume,
+            # the standard proxy, rather than leaving liquidity checks starved of data.
+            if row.get("value") is not None:
+                value = normalize_price_unit(row["value"], self.source, self.scale_map)
+            else:
+                value = close * volume
             bars.append(
                 PriceBar(
                     ticker=ticker,
@@ -111,9 +212,9 @@ class VNStockProvider:
                     open=normalize_price_unit(row["open"], self.source, self.scale_map),
                     high=normalize_price_unit(row["high"], self.source, self.scale_map),
                     low=normalize_price_unit(row["low"], self.source, self.scale_map),
-                    close=normalize_price_unit(row["close"], self.source, self.scale_map),
-                    volume=int(row["volume"]),
-                    value=normalize_price_unit(row["value"], self.source, self.scale_map) if row.get("value") is not None else None,
+                    close=close,
+                    volume=volume,
+                    value=value,
                     source=self.source,
                     fetched_at=fetched_at,
                 )
@@ -121,19 +222,32 @@ class VNStockProvider:
         return bars
 
     def get_fundamentals(self, ticker: str, quarters: int) -> list[FundamentalRecord]:
+        """The VCI ratio report is a wide DataFrame:
+        one row per metric ('item'/'item_en'), one column per period
+        ('YYYY-Qn' or 'YYYY'). Transpose to the one-record-per-period shape
+        FundamentalRecord expects."""
         fetched_at = datetime.now(timezone.utc)
-        stock = self._client.stock(symbol=ticker, source=self.source)
-        raw = stock.finance.ratio(period="quarter", lang="en")
+        # VCI's statistics-financial endpoint returns the whole history
+        # oldest-first and vnstock's ratio() keeps head(4) of it — i.e. the
+        # four OLDEST quarters (2018 for most VN30 tickers). Ask for all rows
+        # and pick the newest ourselves.
+        # ponytail: private vnstock method; re-check on vnstock upgrades.
+        raw = self._finance(ticker)._get_financial_report(
+            "ratio", period="quarter", lang="en", limit=_ALL_PERIODS
+        )
+        # The history interleaves annual columns ("2025"); keep quarters only.
+        period_cols = sorted(c for c in raw.columns if _QUARTER_PERIOD.fullmatch(str(c)))
         records = []
-        for row in raw.to_dict("records")[:quarters]:
+        for period in period_cols[-quarters:]:
+            metrics = _normalize_fundamental_metrics(dict(zip(raw["item_en"], raw[period])))
             records.append(
                 FundamentalRecord(
                     ticker=ticker,
-                    period=str(row["period"]),
+                    period=str(period),
                     report_type="self_prepared",
                     version=1,
-                    metrics={k: v for k, v in row.items() if k != "period"},
-                    published_date=_to_date(row["published_date"]) if row.get("published_date") else None,
+                    metrics=metrics,
+                    published_date=None,  # not exposed by vnstock.api.financial.Finance.ratio()
                     source=self.source,
                     fetched_at=fetched_at,
                 )
@@ -141,39 +255,87 @@ class VNStockProvider:
         return records
 
     def get_foreign_flow(self, ticker: str, start: date, end: date) -> list[ForeignFlowRecord]:
+        """vnstock>=4 removed the historical foreign-trade endpoint entirely
+        (old stock.trading.foreign_trade has no vnstock.api equivalent).
+        The only remaining source is the KBS in-session price board, which
+        gives one current snapshot — not a date range. start/end are ignored;
+        callers get a single record for "now" and must upsert daily to build
+        history (ponytail: no backfill possible, only accrues going forward).
+        """
         fetched_at = datetime.now(timezone.utc)
-        stock = self._client.stock(symbol=ticker, source=self.source)
-        raw = stock.trading.foreign_trade(start=start.isoformat(), end=end.isoformat())
-        records = []
-        for row in raw.to_dict("records"):
-            records.append(
-                ForeignFlowRecord(
-                    ticker=ticker,
-                    trade_date=_to_date(row["time"]),
-                    buy_value=row.get("buy_value"),
-                    sell_value=row.get("sell_value"),
-                    net_value=row.get("net_value"),
-                    room_left=row.get("room_left"),
-                    source=self.source,
-                    fetched_at=fetched_at,
-                )
+        board = self._trading().price_board(symbols_list=[ticker])
+        if board.empty:
+            return []
+        row = board.iloc[0]
+        close_price = normalize_price_unit(float(row["close_price"]), self.source, self.scale_map)
+        buy_value = float(row["foreign_buy_volume"]) * close_price
+        sell_value = float(row["foreign_sell_volume"]) * close_price
+        room_left = row.get("foreign_room")
+        return [
+            ForeignFlowRecord(
+                ticker=ticker,
+                trade_date=_to_date(datetime.fromtimestamp(int(row["time"]) / 1000, tz=timezone.utc)),
+                buy_value=buy_value,
+                sell_value=sell_value,
+                net_value=buy_value - sell_value,
+                room_left=float(room_left) if room_left is not None else None,
+                source="KBS",
+                fetched_at=fetched_at,
             )
-        return records
+        ]
 
     def get_corporate_events(self, ticker: str, start: date, end: date) -> list[CorporateEvent]:
         fetched_at = datetime.now(timezone.utc)
-        stock = self._client.stock(symbol=ticker, source=self.source)
-        raw = stock.company.events(start=start.isoformat(), end=end.isoformat())
+        raw = self._company(ticker).events()  # no start/end param in vnstock.api; filter after fetch
         events = []
         for row in raw.to_dict("records"):
+            event_date = row.get("public_date") or row.get("display_date1")
+            if event_date is None:
+                continue
+            parsed_date = _to_date(event_date)
+            if not (start <= parsed_date <= end):
+                continue
             events.append(
                 CorporateEvent(
                     ticker=ticker,
-                    event_type=str(row["event_type"]),
-                    event_date=_to_date(row["event_date"]),
+                    event_type=str(row.get("event_code") or row.get("category") or "unknown"),
+                    event_date=parsed_date,
                     payload=row,
-                    source_url=row.get("source_url"),
+                    source_url=None,  # not exposed by vnstock.api.company.Company.events()
                     fetched_at=fetched_at,
                 )
             )
         return events
+
+    def get_news(self, ticker: str, start: date, end: date) -> list[NewsItem]:
+        """vnstock.api.company.Company.news() — title/date are populated;
+        news_short_content/news_full_content are None on the Community tier
+        in practice (verified 2026-10-01 against real GAS data), so summary
+        falls back to None rather than the title (never fabricate a summary
+        the source didn't provide — spec §5.7.3 "chỉ dùng nội dung trong đầu
+        vào; không có thông tin thì trả no_info")."""
+        fetched_at = datetime.now(timezone.utc)
+        raw = self._company(ticker).news()
+        items = []
+        for row in raw.to_dict("records"):
+            public_date = row.get("public_date")
+            if public_date is None:
+                continue
+            published_at = datetime.fromisoformat(str(public_date)).replace(tzinfo=timezone.utc)
+            if not (start <= published_at.date() <= end):
+                continue
+            title = row.get("news_title")
+            if not title:
+                continue
+            items.append(
+                NewsItem(
+                    ticker=ticker,
+                    published_at=published_at,
+                    source=row.get("news_source") or "vnstock",
+                    url=row.get("news_source_link"),
+                    title=title,
+                    summary=row.get("news_short_content") or row.get("news_full_content"),
+                    fetched_at=fetched_at,
+                )
+            )
+        return items

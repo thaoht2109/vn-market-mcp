@@ -11,6 +11,13 @@ import pandas as pd
 import psycopg
 import yaml
 
+from llm.bull_bear import BullBearValidationError, run_bear_case, run_bull_case
+from llm.config import ModelsConfig
+from llm.news_digest import NewsDigestValidationError, run_news_digest
+from llm.synthesis import SynthesisValidationError, run_synthesis_daily
+from llm.client import LLMCallError
+from llm.verifier_logic import VerifierPrecheckError, run_verifier_logic
+from ops.alerting import log_event
 from pipeline.action_label import ActionLabelConfig, ActionLabelInput, action_label
 from pipeline.calendar import calendar_covers, latest_trading_day
 from pipeline.coverage import (
@@ -25,15 +32,18 @@ from pipeline.fundamentals import fundamental_snapshot
 from pipeline.indicators import technical_snapshot
 from pipeline.ingest import IngestBatchError, assert_batch_ok, ingest_batch, ingest_fundamentals_and_flow
 from pipeline.positions import get_holding_state
+from pipeline.regime import get_market_regime
+from pipeline.report import render_synthesis_report
 from pipeline.risk_plan import RiskPlanConfig, risk_plan
 from pipeline.scoring import agreement_ratio, composite_score, confidence, percentile_score
-from pipeline.snapshot import write_snapshot
+from pipeline.snapshot import serialize_snapshot, write_snapshot
 from providers.vnstock_provider import FundamentalRecord
 from quality.checks import (
     check_abnormal_move,
     check_daily_completeness,
     check_freshness,
-    check_price_unit_consistency,
+    check_fundamentals_freshness,
+    check_price_series_units,
     check_volume,
     log_check,
 )
@@ -48,6 +58,7 @@ class RunResult:
     ticker: str
     action_label: str | None
     message: str
+    report_text: str | None = None
 
 
 def _load_rules() -> dict:
@@ -74,6 +85,7 @@ def _upsert_prediction(
     stop_loss: float,
     target: float,
     confidence_value: float,
+    refresh_horizon_days: int,
 ) -> tuple[int | None, str]:
     if label is None:
         return None, "none"
@@ -99,7 +111,7 @@ def _upsert_prediction(
         (
             run_id, "on_demand", ticker, trigger, label, universe_tier, holding_state,
             json.dumps(coverage_detail), "mixed", entry_zone[0], entry_zone[1], stop_loss, target,
-            120, confidence_value,
+            refresh_horizon_days, confidence_value,
         ),
     ).fetchone()
     return row[0], trigger
@@ -113,7 +125,12 @@ def run_analysis(
     mode: str = "on_demand",
     style: str = "long",
     depth: str = "quick",
+    llm_clients: dict | None = None,
 ) -> RunResult:
+    """llm_clients: optional {provider_name: StructuredChatClient} override
+    forwarded to run_synthesis_daily — lets tests exercise the
+    mode == "scheduled_post" synthesis path without a real network call
+    (same injection pattern as llm/client.py's call_role)."""
     rules = _load_rules()
 
     try:
@@ -152,7 +169,9 @@ def run_analysis(
     warnings: list[str] = []
     if len(df) >= 2:
         prev_close = float(df.iloc[-2]["close"])
-        unit_check = check_price_unit_consistency(prev_close, today_close)
+        # The whole series, not just prev-vs-today: a mis-scaled session in
+        # the middle of the history poisons ATR14 and every level derived from it.
+        unit_check = check_price_series_units(df["trade_date"].tolist(), df["close"].astype(float).tolist())
         log_check(conn, run_id, ticker, unit_check)
         if unit_check.result == "fail":
             return RunResult(
@@ -235,6 +254,17 @@ def run_analysis(
         for period, metrics in fundamentals_rows
     ]
     fund = fundamental_snapshot(ticker, industry_group, fundamentals_records)
+    # Fail closed on an implausibly old vintage (e.g. 2018 quarters): same
+    # path as stale prices — warning, halved confidence, conservative label.
+    fundamentals_check = check_fundamentals_freshness(
+        max((r.period for r in fundamentals_records), default=None), now.date(),
+    )
+    log_check(conn, run_id, ticker, fundamentals_check)
+    if fundamentals_check.result == "fail":
+        data_stale = True
+        warnings.append(
+            f"chỉ số tài chính mới nhất là kỳ {fundamentals_check.detail.get('latest_period')}, quá cũ để định giá"
+        )
     tech = technical_snapshot(df)
 
     close_history = df["close"].tolist()[:-1]
@@ -267,6 +297,13 @@ def run_analysis(
     composite = composite_score(component_scores, weights)
     agreeing, agreement = agreement_ratio(component_scores)
     conf = confidence(coverage_result.weight_coverage, 1.0 if not data_stale else 0.5, agreement)
+    if coverage_result.tier == "B":
+        # §10.5: nhóm B không chờ đủ mẫu chấm điểm riêng trước khi mở
+        # buy_accumulate (plan ước tính ngưỡng đó gần như không đạt được) —
+        # thay vào đó dùng thống kê chung của nhóm A nhưng ép trần confidence
+        # thấp hơn, để buy_accumulate's min_confidence gate tự nhiên lọc bớt
+        # các trường hợp yếu hơn mà không cần đếm mẫu per-ticker.
+        conf = min(conf, rules["tier_b"]["confidence_cap"])
 
     holding_state = get_holding_state(conn, ticker)
 
@@ -288,8 +325,11 @@ def run_analysis(
         holding_state=holding_state,
         thesis_invalidated=False,
         score=composite.score,
-        buy_allowed=(coverage_result.tier == "A"),
-        regime="risk_on",  # no macro regime role in this plan — never risk_off by default
+        # §10.5: buy_accumulate no longer hard-blocked by universe_tier — tier
+        # B's confidence was already capped above, so the normal
+        # buy_min_confidence gate in action_label() does the filtering.
+        buy_allowed=True,
+        regime=get_market_regime(provider, trading_date),
         agreeing_sources=agreeing,
         rr=plan.rr,
         valuation_percentile=valuation_percentile,
@@ -306,6 +346,10 @@ def run_analysis(
 
     snapshot_ref = write_snapshot(snapshot_dir, run_id, snapshot)
 
+    # runs must exist before Synthesis runs, since llm_calls.run_id has a FK
+    # to runs(run_id) — label/snapshot/warnings below may still change if
+    # Synthesis recommends a downgrade, so this row (and the snapshot file)
+    # gets overwritten after that block, not re-inserted.
     conn.execute(
         """
         INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings)
@@ -314,19 +358,114 @@ def run_analysis(
         (run_id, mode, [ticker], style, depth, now, snapshot_ref, json.dumps(warnings)),
     )
 
+    # LLM roles (spec §5.7.3) run for the post-session cron report and the
+    # weekly deep-dive (spec §4.2, synthesis_full role) — on_demand/
+    # scheduled_pre stay fast and free of LLM cost/latency. A
+    # failed call for any one role just means the report ships without that
+    # extra narrative, never blocks the deterministic pipeline (spec §9
+    # "nhãn hành động do code sinh").
+    if mode in ("scheduled_post", "scheduled_weekly") and label is not None:
+        llm_cfg = ModelsConfig.load()
+        # evidence_ref validation walks the snapshot as plain dicts — pass
+        # the same serialized shape that ends up in the JSON file, not the
+        # raw dict of dataclasses (e.g. snapshot["technical"] is a
+        # TechnicalSnapshot instance here), or every evidence_ref into a
+        # dataclass-valued section would wrongly fail validation.
+        serialized_snapshot = serialize_snapshot(snapshot)
+
+        try:
+            news_items = provider.get_news(ticker, trading_date - timedelta(days=7), trading_date)
+            news_result = run_news_digest(conn, llm_cfg, news_items, run_id=run_id, clients=llm_clients)
+            snapshot["news"] = [
+                {
+                    "event_type": item.event_type, "sentiment": item.sentiment,
+                    "impact_horizon": item.impact_horizon, "thesis_relevance": item.thesis_relevance,
+                    "confidence": item.confidence,
+                }
+                for item in news_result.items
+            ]
+        except (LLMCallError, NewsDigestValidationError) as exc:
+            log_event("news_digest_skipped", ticker=ticker, run_id=run_id, error=str(exc))
+
+        # Bull/Bear + Verifier only run for a ticker that "lọt lưới" — a label
+        # worth debating. stay_out carries nothing to argue for/against, so
+        # skipping it here is the cost-saving gate spec §5.7.2/§11 Phase 5
+        # calls for ("Bull/Bear chỉ cho mã lọt lưới").
+        if label != "stay_out":
+            try:
+                bull = run_bull_case(conn, llm_cfg, serialized_snapshot, run_id, clients=llm_clients)
+                bear = run_bear_case(conn, llm_cfg, serialized_snapshot, run_id, clients=llm_clients)
+                verifier = run_verifier_logic(conn, llm_cfg, serialized_snapshot, bull, bear, run_id, clients=llm_clients)
+                snapshot["debate"] = {
+                    "bull": {"arguments": bull.arguments, "key_risk_to_thesis": bull.key_risk_to_thesis},
+                    "bear": {"arguments": bear.arguments, "key_risk_to_thesis": bear.key_risk_to_thesis},
+                    "verifier": {
+                        "bull_logic_valid": verifier.bull_logic_valid,
+                        "bear_logic_valid": verifier.bear_logic_valid,
+                        "issues": verifier.issues,
+                    },
+                }
+            except (LLMCallError, BullBearValidationError, VerifierPrecheckError) as exc:
+                log_event("bull_bear_verifier_skipped", ticker=ticker, run_id=run_id, error=str(exc))
+
+        try:
+            synthesis = run_synthesis_daily(
+                conn, llm_cfg, serialize_snapshot(snapshot), run_id, clients=llm_clients,
+                role_name="synthesis_full" if mode == "scheduled_weekly" else "synthesis_daily",
+            )
+            snapshot["synthesis"] = {
+                "thesis_summary": synthesis.thesis_summary,
+                "supporting_points": synthesis.supporting_points,
+                "contradictions": synthesis.contradictions,
+                "scenarios": synthesis.scenarios,
+                "invalidation_rules": synthesis.invalidation_rules,
+            }
+            if synthesis.downgrade_to is not None:
+                warnings.append(f"Synthesis đề nghị hạ nhãn xuống {synthesis.downgrade_to}: {synthesis.downgrade_reason}")
+                label = synthesis.downgrade_to
+                snapshot["action_label"] = label
+        except (LLMCallError, SynthesisValidationError) as exc:
+            log_event("synthesis_skipped", ticker=ticker, run_id=run_id, error=str(exc))
+
+        # Persist unconditionally: news/debate may have succeeded even if
+        # Synthesis above failed, and must not be silently dropped from the
+        # snapshot file just because the last role in the chain errored.
+        write_snapshot(snapshot_dir, run_id, snapshot)
+        conn.execute("UPDATE runs SET warnings = %s WHERE run_id = %s", (json.dumps(warnings), run_id))
+
     _prediction_id, trigger = _upsert_prediction(
         conn, run_id, ticker, label, coverage_result.tier, holding_state,
         snapshot["coverage"], plan.entry_zone, plan.stop_loss, plan.target, conf,
+        rules["predictions"]["refresh_horizon_days"],
     )
 
-    return RunResult(run_id=run_id, status="ok", ticker=ticker, action_label=label, message=f"trigger={trigger}")
+    report_text = render_synthesis_report(snapshot) if mode in ("scheduled_post", "scheduled_weekly") else None
+    return RunResult(
+        run_id=run_id, status="ok", ticker=ticker, action_label=label, message=f"trigger={trigger}",
+        report_text=report_text,
+    )
+
+
+def _run_with_retry(get_conn_fn, provider, ticker: str, snapshot_dir: Path, style: str, depth: str) -> RunResult:
+    """Transient connection failures (e.g. the host DB port briefly
+    unreachable while a container is being recreated) shouldn't page ops on
+    their own — retry a couple times before giving up."""
+    for attempt in range(3):
+        try:
+            with get_conn_fn() as conn:
+                return run_analysis(conn, provider, ticker, snapshot_dir, style=style, depth=depth)
+        except psycopg.OperationalError:
+            if attempt == 2:
+                raise
+            log_event("run_db_connect_retry", ticker=ticker, attempt=attempt + 1)
+            time.sleep(2 * (attempt + 1))
 
 
 if __name__ == "__main__":
     import argparse
 
     from db.connection import get_conn
-    from ops.alerting import log_event, send_ops_alert
+    from ops.alerting import send_ops_alert
     from providers.vnstock_provider import VNStockProvider
 
     parser = argparse.ArgumentParser(description="Run the Phase 0 pipeline for one ticker (on-demand).")
@@ -337,11 +476,9 @@ if __name__ == "__main__":
 
     log_event("run_started", ticker=args.ticker, style=args.style, depth=args.depth)
     try:
-        with get_conn() as conn:
-            result = run_analysis(
-                conn, VNStockProvider(source="VCI"), args.ticker, Path("snapshots"),
-                style=args.style, depth=args.depth,
-            )
+        result = _run_with_retry(
+            get_conn, VNStockProvider(source="VCI"), args.ticker, Path("snapshots"), args.style, args.depth,
+        )
         if result.status == "ok":
             log_event("run_finished", ticker=args.ticker, status=result.status, action_label=result.action_label)
         else:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
@@ -46,6 +47,45 @@ def check_price_unit_consistency(prev_close: float, today_close: float, threshol
             "price_unit", "fail", {"prev_close": prev_close, "today_close": today_close, "ratio": ratio}
         )
     return CheckResult("price_unit", "pass", {})
+
+
+def check_price_series_units(trade_dates: list[date], closes: list[float]) -> CheckResult:
+    """Unit-scale check over the WHOLE close series, not just the last two.
+
+    One session stored in thousand-VND between correctly-scaled neighbours
+    (real 2026-09-28 incident: ACB 21.1 among 21,100s) passes a
+    prev-vs-today check but inflates ATR14 ~8x and every ATR-derived level.
+    """
+    for i in range(1, len(closes)):
+        pair = check_price_unit_consistency(closes[i - 1], closes[i])
+        if pair.result == "fail":
+            pair.detail["trade_date"] = str(trade_dates[i])
+            return pair
+    return CheckResult("price_unit", "pass", {})
+
+
+_FUNDAMENTALS_MAX_AGE_DAYS = 200  # a quarter ends, ~45d to publish, +1 missed quarter of slack
+_QUARTER = re.compile(r"(\d{4})-?Q([1-4])")
+
+
+def check_fundamentals_freshness(latest_period: str | None, as_of: date) -> CheckResult:
+    """Fail when the newest stored fundamentals quarter is implausibly old.
+
+    Real 2026-10-02 incident: every VN30 ticker was valued on 2018 quarters
+    (vnstock kept the 4 OLDEST periods) while 2026-Q2 existed.
+    """
+    match = _QUARTER.fullmatch(latest_period or "")
+    if match is None:
+        return CheckResult("fundamentals_freshness", "fail", {"latest_period": latest_period, "reason": "no usable period"})
+    year, quarter = int(match.group(1)), int(match.group(2))
+    quarter_end = date(year, quarter * 3, 30 if quarter in (2, 3) else 31)
+    age_days = (as_of - quarter_end).days
+    if age_days > _FUNDAMENTALS_MAX_AGE_DAYS:
+        return CheckResult(
+            "fundamentals_freshness", "fail",
+            {"latest_period": latest_period, "age_days": age_days, "max_age_days": _FUNDAMENTALS_MAX_AGE_DAYS},
+        )
+    return CheckResult("fundamentals_freshness", "pass", {})
 
 
 def check_abnormal_move(
