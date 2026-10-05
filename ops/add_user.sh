@@ -29,7 +29,7 @@ if ! docker exec "$HERMES" test -d "/opt/data/profiles/$NAME"; then
   docker exec "$HERMES" hermes profile create "$NAME" --clone --no-alias --description "vn-market cá nhân: $NAME" >/dev/null
   NEW_PROFILE=1
 fi
-docker exec "$HERMES" sh -c "mkdir -p /opt/data/backups/add_user-$STAMP && cp /opt/data/config.yaml /opt/data/.env /opt/data/backups/add_user-$STAMP/ && cp /opt/data/profiles/$NAME/config.yaml /opt/data/backups/add_user-$STAMP/config.$NAME.yaml"
+docker exec -u hermes "$HERMES" sh -c "mkdir -p /opt/data/backups/add_user-$STAMP && cp /opt/data/config.yaml /opt/data/.env /opt/data/backups/add_user-$STAMP/ && cp /opt/data/profiles/$NAME/config.yaml /opt/data/backups/add_user-$STAMP/config.$NAME.yaml"
 
 echo "2-3/4 VNMCP_USER_ID, profile_routes, allowlist"
 docker exec -i -e NAME="$NAME" -e TG_ID="$TG_ID" -e GROUP_ID="$GROUP_ID" -e NEW_PROFILE="$NEW_PROFILE" \

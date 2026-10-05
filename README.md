@@ -93,7 +93,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `pipeline/stock_report.py` | Render báo cáo cổ phiếu bằng code |
 | `pipeline/jobs.py`, `pipeline/grading.py` | Hàng đợi job, chấm dự báo |
 | `mcp_server/` | MCP server và 16 tool; `identity.py` xác định người gọi (`VNMCP_USER_ID`) |
-| `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, backup, `add_user.sh` (thêm người dùng) |
+| `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, backup, `add_user.sh` / `remove_user.sh` (thêm / xóa người dùng) |
 | `db/` | Migrations (`001`–`016`), tạo role, tạo DB test |
 | `llm/`, `schemas/` | Các vai trò LLM trong pipeline (đang **tắt**, giữ lại để bật sau) |
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
@@ -372,7 +372,23 @@ Các bước lệnh thực hiện (làm tay nếu cần):
 
 Hai profile khai báo cùng tên server `vn-market-mcp` nhưng khác `env` (khác `VNMCP_USER_ID`) thì Hermes không dùng chung kết nối MCP, nên mỗi profile có tiến trình MCP riêng gắn với đúng người.
 
-Bỏ một người dùng: xóa luật trong `profile_routes`, xóa user id khỏi `TELEGRAM_ALLOWED_USERS`, xóa dòng của họ trong `users` (cần quyền admin), rồi `docker exec hermes-gateway hermes profile delete <tên>`.
+Xóa một người dùng không còn dùng và thu hồi mọi thứ gắn với họ:
+
+```bash
+ops/remove_user.sh <tên>          # in danh sách sẽ xóa, hỏi gõ lại tên để xác nhận
+ops/remove_user.sh <tên> --yes    # không hỏi (dùng trong script)
+```
+
+| Thu hồi | Chi tiết |
+|---|---|
+| Luật định tuyến | Mọi luật có `profile: <tên>` trong `gateway.profile_routes`. Luật của người khác giữ nguyên |
+| Quyền Telegram | User id khỏi `TELEGRAM_ALLOWED_USERS`, id nhóm riêng khỏi `TELEGRAM_GROUP_ALLOWED_CHATS`. Id nào còn được luật khác dùng (ví dụ nhóm chung) thì giữ |
+| Profile Hermes | Xóa hẳn: cấu hình, bộ nhớ, phiên chat |
+| Dữ liệu riêng trong DB | Danh sách theo dõi (`watchlist_extra`), vị thế (`positions`), dòng `users` — trong một transaction |
+
+User id được đọc từ `VNMCP_USER_ID` của profile (hoặc từ luật định tuyến nếu profile đã mất). Trước khi xóa, lệnh sao lưu `config.yaml`, `.env` và bản lưu trữ profile (`hermes profile export`) vào `~/.hermes/backups/remove_user-<thời điểm>/`, và các dòng DB thành CSV trong `backups/remove_user-<tên>-<thời điểm>/`. Dữ liệu dùng chung (giá, `runs`, `predictions`) và lịch sử job không bị đụng tới. Sau khi xóa, tin nhắn riêng của người đó bị bot từ chối; tin trong nhóm chung vẫn vào `default` như mọi người khác.
+
+Khôi phục nếu xóa nhầm: `hermes profile import <bản lưu trữ>`, chạy lại `ops/add_user.sh` với cùng tham số, rồi nạp lại các CSV bằng `\copy`.
 
 Vẫn có thể cho một người dùng bot riêng thay cho bot chung: đặt `TELEGRAM_BOT_TOKEN` trong `.env` của profile đó, ghi token cho worker vào `users.env` (cạnh `docker-compose.yml`, không commit) dưới tên `TELEGRAM_BOT_TOKEN_<TÊN>`, và đặt `users.bot_token_env` bằng tên đó.
 
