@@ -8,4 +8,4 @@ __pycache__/
 .code-review-graph/
 snapshots/
 backups/
-users.env
+secrets/

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Remove a user added by ops/add_user.sh and revoke everything tied to them:
-#   - Hermes: their profile_routes, their ids in TELEGRAM_ALLOWED_USERS / TELEGRAM_GROUP_ALLOWED_CHATS
-#     (only ids no other route still uses), and the profile itself (memory, sessions, config)
+# Remove a user added by ops/add_user.sh and revoke everything tied to them, without restarting
+# the gateway or the worker (the multiplexer unserves the deleted profile and stops only its bot):
+#   - Hermes: the profile (own bot token, memory, sessions, config); leftovers of the old shared-bot
+#     setup (profile_routes, ids in default's allowlists that no other route uses) are removed from
+#     the files and dropped by the gateway at its next restart — until then they point to an unserved
+#     profile, which Hermes rejects
+#   - the worker's copy of the bot token (secrets/users.env)
 #   - Postgres: their watchlist (watchlist_extra), positions and users row
 # Before deleting: Hermes config + a profile archive go to ~/.hermes/backups/remove_user-<stamp>/,
 # the DB rows to ./backups/remove_user-<tên>-<stamp>/*.csv. Shared data (runs, predictions,
@@ -115,8 +119,8 @@ if [[ -n "$TG_ID" ]]; then
 fi
 cat <<EOF
 Sẽ xóa người dùng '$NAME' (telegram user id: ${TG_ID:-?}):
-  - profile Hermes: $([[ "$PROFILE_EXISTS" == 1 ]] && echo "có, sẽ lưu trữ rồi xóa" || echo "không còn")
-  - luật định tuyến: ${ROUTES:-không có}
+  - profile Hermes và bot riêng: $([[ "$PROFILE_EXISTS" == 1 ]] && echo "có, sẽ lưu trữ rồi xóa" || echo "không còn")
+  - luật định tuyến bot chung (cũ): ${ROUTES:-không có}
   - quyền Telegram: user id khỏi TELEGRAM_ALLOWED_USERS${GROUP_IDS:+, nhóm $GROUP_IDS khỏi TELEGRAM_GROUP_ALLOWED_CHATS}
   - dữ liệu riêng: $COUNTS
 EOF
@@ -152,19 +156,32 @@ if [[ -n "$TG_ID" ]]; then
     COMMIT;"
 fi
 
-echo "4/4 xóa profile và restart $HERMES"
+echo "4/4 xóa profile, dừng bot riêng (không restart gateway)"
 if [[ "$PROFILE_EXISTS" == 1 ]]; then
-  docker exec "$HERMES" hermes profile delete "$NAME" --yes >/dev/null
+  docker exec -u hermes "$HERMES" hermes profile delete "$NAME" --yes >/dev/null
 fi
-docker restart "$HERMES" >/dev/null
-for attempt in $(seq 1 6); do
-  sleep 10
-  docker exec "$HERMES" hermes gateway status >/dev/null 2>&1 && break
-  [[ $attempt == 6 ]] && { echo "gateway chưa chạy lại, kiểm tra: docker logs $HERMES" >&2; exit 1; }
-done
+# profile delete already asks the gateway to unserve it; ask again and check, in case that was missed.
+docker exec -i -u hermes -e NAME="$NAME" -w /opt/hermes "$HERMES" /opt/hermes/.venv/bin/python - <<'PY'
+import os
+from pathlib import Path
+
+from gateway.control_socket import rescan_gateway_profiles
+
+answer = rescan_gateway_profiles(Path("/opt/data"), timeout=8.0) or {}
+served = answer.get("served_profiles")
+if served is not None and os.environ["NAME"] in served:
+    raise SystemExit(f"gateway vẫn phục vụ profile {os.environ['NAME']}: {answer}")
+print(f"   gateway đang phục vụ: {served if served is not None else '(không trả lời; tự quét lại trong 30 giây)'}")
+PY
+if [[ -f secrets/users.env ]]; then
+  TOKEN_ENV="TELEGRAM_BOT_TOKEN_${NAME^^}"
+  grep -v "^$TOKEN_ENV=" secrets/users.env > secrets/users.env.tmp || true
+  cat secrets/users.env.tmp > secrets/users.env && rm secrets/users.env.tmp
+fi
 
 echo
-echo "Xong. Người dùng '$NAME' nhắn bot giờ sẽ vào profile default (nhóm chung), hoặc bị từ chối nếu nhắn riêng."
+echo "Xong, không restart gateway hay worker. Bot riêng của '$NAME' đã ngừng; tin nhắn của họ trong nhóm chung vẫn vào profile default."
+echo "Nên thu hồi token của bot đó ở @BotFather (/revoke hoặc /deletebot)."
 echo "Sao lưu Hermes (cấu hình + profile): ~/.hermes/backups/remove_user-$STAMP/"
 [[ -n "$TG_ID" ]] && echo "Sao lưu dữ liệu DB: $DB_BACKUP/"
 echo "Khôi phục: hermes profile import <archive>, chép lại config.yaml/.env, rồi ops/add_user.sh và nạp lại các CSV."

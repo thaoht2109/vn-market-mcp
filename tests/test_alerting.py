@@ -1,7 +1,24 @@
 import httpx
 import pytest
 
-from ops.alerting import send_ops_alert
+from ops import alerting
+from ops.alerting import send_ops_alert, send_user_message
+
+
+def test_user_bot_token_added_after_start_is_used_without_restart(db_conn, monkeypatch, tmp_path):
+    users_env = tmp_path / "users.env"
+    monkeypatch.setattr(alerting, "USERS_ENV", users_env)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN_LAN", raising=False)
+    db_conn.execute("INSERT INTO users (user_id, chat_id, bot_token_env) VALUES ('lan1', '42', 'TELEGRAM_BOT_TOKEN_LAN')")
+    sent = []
+    monkeypatch.setattr(httpx, "post", lambda url, json, timeout: sent.append(url) or httpx.Response(
+        200, request=httpx.Request("POST", url)))
+
+    assert send_user_message(db_conn, "lan1", "x") is False  # no token yet: skipped, not sent
+    users_env.write_text("# comment\nTELEGRAM_BOT_TOKEN_LAN=lan-token\n")  # ops/add_user.sh, worker still running
+    assert send_user_message(db_conn, "lan1", "x") is True
+    assert sent == ["https://api.telegram.org/botlan-token/sendMessage"]
+    assert send_user_message(db_conn, "nobody", "x") is None
 
 
 def test_send_ops_alert_skips_when_config_missing(monkeypatch):

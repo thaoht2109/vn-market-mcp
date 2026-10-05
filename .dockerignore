@@ -11,3 +11,6 @@ __pycache__
 *.pyc
 # bind-mounted at runtime (docker-compose.yml worker: ./snapshots:/app/snapshots)
 snapshots
+# per-user bot tokens (ops/add_user.sh), bind-mounted, never baked into the image
+secrets
+users.env
