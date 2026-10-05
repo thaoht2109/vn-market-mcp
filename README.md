@@ -55,7 +55,7 @@ Tài liệu thiết kế: `../vn-trading-agent-plan_final.md`. Kế hoạch tri�
                                      │
                Hermes gateway: profile default · profile của từng người
                                      │
-     Telegram: một bot chung; profile_routes chọn profile theo user_id + chat_id
+     Telegram: mỗi người một bot riêng → profile riêng; bot chung → default (nhóm chung)
 
  worker ──kết quả on_demand──► bot + chat riêng của người yêu cầu (bảng users)
         ──lỗi vận hành──────► nhóm ops (TELEGRAM_ALERT_CHAT_ID)
@@ -99,7 +99,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
 | `.hermes/skills/vn-market/vn-stock-analyze/` | Skill duy nhất cho phân tích cổ phiếu VN: định tuyến câu hỏi sang tool MCP, giọng văn, quy trình báo cáo. Dùng chung, chỉ đọc cho mọi profile |
 | `config/` | `vn-rules.yaml` (ngưỡng nghiệp vụ), `models.yaml` (mô hình LLM) |
-| `users.env` | Tùy chọn: token của bot riêng (nếu có người không dùng bot chung). Không commit (đã có trong `.gitignore`) |
+| `secrets/users.env` | Token bot riêng của từng người cho worker (`ops/add_user.sh` ghi, mount chỉ đọc vào worker). Không commit, không vào image |
 
 ## 4. Yêu cầu
 
@@ -119,7 +119,7 @@ cp .env.example .env && chmod 600 .env
 
 Điền các biến `MCP_RO_PASSWORD`, `PIPELINE_RW_PASSWORD`, `RETENTION_JOB_PASSWORD`, `*_DATABASE_URL`, `VNSTOCK_API_KEY`, `TELEGRAM_BOT_TOKEN` và `TELEGRAM_ALERT_CHAT_ID`.
 
-Mọi người dùng chung bot `TELEGRAM_BOT_TOKEN` (xem [mục 10](#nhiều-người-dùng-dữ-liệu-tách-riêng)). `users.env` chỉ cần khi có người dùng bot riêng; không có file này thì worker vẫn chạy.
+`TELEGRAM_BOT_TOKEN` là bot chung (nhóm chung, cảnh báo vận hành). Token bot riêng của từng người nằm ở `secrets/users.env`, do `ops/add_user.sh` ghi (xem [mục 10](#nhiều-người-dùng-dữ-liệu-tách-riêng)); worker vẫn chạy khi file này trống.
 
 **5.2. Khởi động Postgres, chạy migration, tạo role**
 
@@ -172,7 +172,7 @@ Tin nhắn Telegram do worker gửi (`ops/worker.py`, `ops/alerting.py`):
 
 | Sự kiện | Gửi tới |
 |---|---|
-| Kết quả job `on_demand` (`run_analysis`, `watch_ticker`) từ chat riêng của một người dùng, và lỗi của nó | Chat riêng của người đó (`users.chat_id`, qua bot chung). Nhãn trong tin đã tính theo vị thế của người đó |
+| Kết quả job `on_demand` (`run_analysis`, `watch_ticker`) từ bot riêng của một người dùng, và lỗi của nó | Chat của người đó (`users.chat_id`), qua bot riêng của họ. Nhãn trong tin đã tính theo vị thế của người đó |
 | Kết quả `on_demand` từ nhóm chung (profile `default`), hoặc từ người chưa có dòng trong `users` | Nhóm ops (`TELEGRAM_ALERT_CHAT_ID`) |
 | Job crash, `data_quality_error` của job theo lịch | Nhóm ops |
 | `insufficient_coverage` của job theo lịch | Không gửi: mã nhỏ được theo dõi sẽ báo lỗi này mỗi phiên, đó là bình thường |
@@ -304,75 +304,48 @@ Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trư
 | Giá, BCTC, khối ngoại, tin tức | Vị thế (`positions`) |
 | `runs`, `predictions`, snapshot (nhãn chung) | Danh sách theo dõi (`watchlist_extra`) |
 | Hàng đợi job, worker | Nhãn theo vị thế khi đọc kết quả |
-| Một bot Telegram, một Hermes gateway | Hermes profile: `config.yaml`, `memories/`, `sessions/`, MCP server với `VNMCP_USER_ID` |
-| | Chat nhận kết quả (`users`) |
+| Một tiến trình Hermes gateway | Hermes profile: `config.yaml`, `.env`, `memories/`, `sessions/`, MCP server với `VNMCP_USER_ID` |
+| Bot chung (profile `default`) cho nhóm chung | **Bot Telegram riêng**, chat nhận kết quả (`users`) |
 
-**Một bot chung, định tuyến theo người + chat.** Bot Telegram chỉ nhận và gửi tin, không tham gia logic. Hermes chọn profile cho từng tin nhắn đến bot chung bằng `gateway.profile_routes` trong `~/.hermes/config.yaml` (profile `default`). Mỗi luật yêu cầu **đồng thời** đúng `user_id` (người gửi) và đúng `chat_id` (chat riêng của người đó):
-
-```yaml
-gateway:
-  profile_routes:
-    - name: alice-dm
-      platform: telegram
-      profile: alice
-      user_id: "<telegram user id của alice>"
-      chat_id: "<telegram user id của alice>"   # chat riêng với bot: chat_id = user_id
-    - name: alice-group                          # tùy chọn: nhóm riêng chỉ gồm alice và bot
-      platform: telegram
-      profile: alice
-      user_id: "<telegram user id của alice>"
-      chat_id: "<id nhóm riêng của alice>"
-```
+**Mỗi người một bot riêng.** Bot Telegram chỉ nhận và gửi tin, không tham gia logic, nhưng nó quyết định tin nhắn vào profile nào: bot của profile `alice` (token trong `~/.hermes/profiles/alice/.env`) chỉ phục vụ profile `alice`, và chỉ trả lời chủ của nó (`TELEGRAM_ALLOWED_USERS` trong cùng file). Bot chung của profile `default` phục vụ các nhóm chung.
 
 | Ai nhắn, ở đâu | Profile | Được làm |
 |---|---|---|
-| Alice, trong chat riêng (hoặc nhóm riêng có luật) | `alice` | Phân tích mã; danh mục riêng (theo dõi, vị thế, `/danhsach`); nhãn theo vị thế của Alice |
-| Alice hoặc bất kỳ ai, trong nhóm chung (ví dụ nhóm ops) | `default` | Phân tích mã, nhãn chung. Tool danh mục riêng trả `status="no_personal_scope"` |
-| Người khác nhắn vào nhóm riêng của Alice | `default` | Như nhóm chung: không chạm được danh mục của Alice |
+| Alice, với bot riêng của Alice (chat riêng hoặc nhóm riêng đã khai báo) | `alice` | Phân tích mã; danh mục riêng (theo dõi, vị thế, `/danhsach`); nhãn theo vị thế của Alice |
+| Bất kỳ ai, với bot chung trong nhóm chung | `default` | Phân tích mã, nhãn chung. Tool danh mục riêng trả `status="no_personal_scope"` |
+| Người khác nhắn bot riêng của Alice | — | Bot từ chối (không có trong `TELEGRAM_ALLOWED_USERS` của profile) |
 
-Profile `default` không đặt `VNMCP_USER_ID`, nên MCP server của nó không có phạm vi cá nhân nào. Danh tính chỉ đến từ biến môi trường của profile, không bao giờ từ nội dung chat hay tham số do mô hình điền.
+Profile `default` không đặt `VNMCP_USER_ID`, nên MCP server của nó không có phạm vi cá nhân nào. Danh tính chỉ đến từ biến môi trường của profile, không bao giờ từ nội dung chat hay tham số do mô hình điền. Hai profile khai báo cùng tên server `vn-market-mcp` nhưng khác `env` thì Hermes không dùng chung kết nối MCP, nên mỗi profile có tiến trình MCP riêng gắn với đúng người.
 
-Thêm một người dùng bằng một lệnh, chạy trên host tại thư mục repo:
+**Thêm và xóa người dùng không cần restart.** Hermes gateway chạy chế độ nhiều profile: khi một profile được tạo, xóa, hoặc `config.yaml`/`.env` của nó đổi, gateway chỉ bật, tắt hoặc kết nối lại bot của đúng profile đó (lệnh quét `rescan-profiles`, và tự quét mỗi 30 giây), bot của người khác không bị đụng tới. Worker đọc token bot riêng từ `secrets/users.env` mỗi lần gửi tin, nên cũng không cần restart. Chỉ những thay đổi chung (nâng cấp Hermes, sửa `~/.hermes/config.yaml` của `default`, sửa skill chung) mới cần restart gateway.
 
-```bash
-ops/add_user.sh <tên> <telegram_user_id> [group_id]
-# ví dụ: ops/add_user.sh lan 123456789
-#        ops/add_user.sh lan 123456789 -1001234567890   # kèm nhóm riêng (chỉ lan + bot)
-```
+#### Thêm người dùng
 
-Lệnh làm đủ 4 việc dưới đây, sao lưu cấu hình Hermes cũ vào `~/.hermes/backups/add_user-<thời điểm>/`, kiểm tra luật định tuyến (đúng người đúng chat vào profile mới, người khác thì không), restart gateway và chạy `mcp test` cho profile mới. Chạy lại với cùng tham số thì không đổi gì; chạy lại với tham số mới thì cập nhật (luật của người đó được thay theo tên). Có `group_id` thì kết quả phân tích được gửi vào nhóm riêng thay cho chat riêng. Profile mới tạo được xóa trắng `memories/USER.md`. Biến môi trường tùy chọn: `HERMES_CONTAINER` (mặc định `hermes-gateway`), `COMPOSE_PROJECT_NAME` (mặc định `vn-market-mcp`).
-
-Các bước lệnh thực hiện (làm tay nếu cần):
-
-1. Tạo profile (tên chỉ gồm chữ thường và số):
+1. Người vận hành tạo một bot cho người đó qua @BotFather (`/newbot`), lấy token. Telegram không cho tạo bot bằng API nên bước này làm tay, khoảng một phút.
+2. Chạy trên host, tại thư mục repo:
 
    ```bash
-   docker exec hermes-gateway hermes profile create alice --clone --no-alias
+   ops/add_user.sh <tên> <telegram_user_id> <bot_token> [group_id]
+   # ví dụ: ops/add_user.sh lan 123456789 7654321:AAH...
+   #        ops/add_user.sh lan 123456789 7654321:AAH... -1001234567890   # kèm nhóm riêng (chỉ lan + bot của lan)
    ```
 
-   `--clone` sao chép cấu hình (gồm `skills.external_dirs`, nên skill chung có sẵn), skill **và cả bộ nhớ** của `default`. Mở `~/.hermes/profiles/alice/memories/USER.md` và xóa ghi chú về người khác. Profile không cần bot token riêng. Kiểm tra `docker exec hermes-gateway hermes -p alice skills list` chỉ có một skill `vn-…` là `vn-stock-analyze`.
-2. Trong `~/.hermes/profiles/alice/config.yaml`, mục `mcp_servers.vn-market-mcp.env`, thêm `VNMCP_USER_ID: '<telegram user id của alice>'`.
-3. Trong `~/.hermes/config.yaml` (profile `default`), thêm luật `alice-dm` như trên vào `gateway.profile_routes`. Trong `~/.hermes/.env`, thêm user id của alice vào `TELEGRAM_ALLOWED_USERS` (danh sách cách nhau bởi dấu phẩy) để bot chung nhận tin nhắn riêng của alice. Nếu dùng nhóm riêng, thêm cả luật `alice-group` và thêm id nhóm vào `TELEGRAM_GROUP_ALLOWED_CHATS`.
-4. Đăng ký nơi nhận kết quả (chat riêng với bot chung):
+3. Người dùng nhắn `/start` cho bot của mình (Telegram chỉ cho bot nhắn tới người đã nhắn bot trước), rồi nhắn thử một câu hỏi. Hermes không trả lời riêng `/start`.
 
-   ```bash
-   docker compose exec postgres psql -U vnmcp_admin -p 5433 vnmcp -c \
-     "INSERT INTO users (user_id, chat_id) VALUES ('<user id>', '<user id hoặc id nhóm riêng>')"
-   ```
+Lệnh làm, không restart gì:
 
-   `bot_token_env` mặc định là `TELEGRAM_BOT_TOKEN`, tức bot chung, nên không cần thêm token nào.
-5. Kiểm tra cấu hình, khởi động lại gateway rồi kiểm tra:
+| Bước | Việc |
+|---|---|
+| Kiểm tra token | Gọi `getMe` của Telegram; từ chối token đang được profile khác dùng (hai profile cùng một token sẽ tranh nhau tin nhắn) |
+| Profile | Tạo bằng `--clone` nếu chưa có (xóa trắng `memories/USER.md` vì bản clone mang ghi chú về người khác), đặt `VNMCP_USER_ID`, đảm bảo nạp skill chung |
+| `.env` của profile | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` (chỉ chủ bot), `TELEGRAM_GROUP_ALLOWED_CHATS` (nhóm riêng, nếu có) |
+| Nơi nhận kết quả | `TELEGRAM_BOT_TOKEN_<TÊN>` trong `secrets/users.env` (mount chỉ đọc vào worker), dòng `users` trỏ tới biến đó và tới chat riêng hoặc nhóm riêng |
+| Dọn cấu hình cũ | Luật `profile_routes` và id trong danh sách cho phép của bot chung từ thời dùng bot chung (nếu có): xóa khỏi file, gateway bỏ ở lần restart tới |
+| Bật bot | Gọi `rescan-profiles`, chờ log `✓ telegram connected (profile: <tên>)`; báo lỗi và trả mã khác 0 nếu thấy `✗ telegram failed to connect`. Cuối cùng `mcp test` |
 
-   ```bash
-   docker exec hermes-gateway hermes config check
-   docker restart hermes-gateway
-   docker exec hermes-gateway hermes -p alice mcp test vn-market-mcp  # Connected, 16 tools
-   ```
-6. Alice nhắn `/start` cho bot chung trong chat riêng. Telegram chỉ cho bot nhắn tới người đã nhắn bot trước.
+Chạy lại với cùng tham số thì không đổi gì; với tham số mới thì cập nhật. Cấu hình Hermes cũ được sao lưu vào `~/.hermes/backups/add_user-<thời điểm>/`. Biến môi trường tùy chọn: `HERMES_CONTAINER` (mặc định `hermes-gateway`), `COMPOSE_PROJECT_NAME` (mặc định `vn-market-mcp`).
 
-Hai profile khai báo cùng tên server `vn-market-mcp` nhưng khác `env` (khác `VNMCP_USER_ID`) thì Hermes không dùng chung kết nối MCP, nên mỗi profile có tiến trình MCP riêng gắn với đúng người.
-
-Xóa một người dùng không còn dùng và thu hồi mọi thứ gắn với họ:
+#### Xóa người dùng
 
 ```bash
 ops/remove_user.sh <tên>          # in danh sách sẽ xóa, hỏi gõ lại tên để xác nhận
@@ -381,16 +354,14 @@ ops/remove_user.sh <tên> --yes    # không hỏi (dùng trong script)
 
 | Thu hồi | Chi tiết |
 |---|---|
-| Luật định tuyến | Mọi luật có `profile: <tên>` trong `gateway.profile_routes`. Luật của người khác giữ nguyên |
-| Quyền Telegram | User id khỏi `TELEGRAM_ALLOWED_USERS`, id nhóm riêng khỏi `TELEGRAM_GROUP_ALLOWED_CHATS`. Id nào còn được luật khác dùng (ví dụ nhóm chung) thì giữ |
-| Profile Hermes | Xóa hẳn: cấu hình, bộ nhớ, phiên chat |
-| Dữ liệu riêng trong DB | Danh sách theo dõi (`watchlist_extra`), vị thế (`positions`), dòng `users` — trong một transaction |
+| Profile Hermes và bot riêng | Xóa profile (cấu hình, token, bộ nhớ, phiên chat); gateway ngừng bot đó ngay, không restart |
+| Token cho worker | Dòng `TELEGRAM_BOT_TOKEN_<TÊN>` trong `secrets/users.env` |
+| Cấu hình bot chung cũ (nếu có) | Luật `profile: <tên>` và id trong danh sách cho phép, trừ id còn được luật khác dùng. Đến lần restart tới, luật cũ trỏ vào profile đã xóa nên Hermes từ chối |
+| Dữ liệu riêng trong DB | Danh sách theo dõi (`watchlist_extra`), vị thế (`positions`), dòng `users`, trong một transaction |
 
-User id được đọc từ `VNMCP_USER_ID` của profile (hoặc từ luật định tuyến nếu profile đã mất). Trước khi xóa, lệnh sao lưu `config.yaml`, `.env` và bản lưu trữ profile (`hermes profile export`) vào `~/.hermes/backups/remove_user-<thời điểm>/`, và các dòng DB thành CSV trong `backups/remove_user-<tên>-<thời điểm>/`. Dữ liệu dùng chung (giá, `runs`, `predictions`) và lịch sử job không bị đụng tới. Sau khi xóa, tin nhắn riêng của người đó bị bot từ chối; tin trong nhóm chung vẫn vào `default` như mọi người khác.
+Trước khi xóa, lệnh sao lưu `config.yaml`, `.env` và bản lưu trữ profile (`hermes profile export`) vào `~/.hermes/backups/remove_user-<thời điểm>/`, và các dòng DB thành CSV trong `backups/remove_user-<tên>-<thời điểm>/`. Dữ liệu dùng chung và lịch sử job không bị đụng tới. Sau khi xóa nên thu hồi token ở @BotFather (`/revoke` hoặc `/deletebot`).
 
 Khôi phục nếu xóa nhầm: `hermes profile import <bản lưu trữ>`, chạy lại `ops/add_user.sh` với cùng tham số, rồi nạp lại các CSV bằng `\copy`.
-
-Vẫn có thể cho một người dùng bot riêng thay cho bot chung: đặt `TELEGRAM_BOT_TOKEN` trong `.env` của profile đó, ghi token cho worker vào `users.env` (cạnh `docker-compose.yml`, không commit) dưới tên `TELEGRAM_BOT_TOKEN_<TÊN>`, và đặt `users.bot_token_env` bằng tên đó.
 
 ### Skill dùng chung, góc nhìn riêng
 
@@ -450,11 +421,12 @@ Cần client `pg_dump` phiên bản 16. Nếu host khác phiên bản, chạy tr
 | `insufficient_coverage` với mã mới | Lần chạy đầu đã tự tải khoảng 3 năm giá. Nếu vẫn báo lỗi thì mã chưa đủ 500 phiên niêm yết, thanh khoản 20 phiên dưới 5 tỷ, hoặc chưa đủ 4 quý BCTC: đúng thiết kế, không phải lỗi |
 | `unknown_ticker` | Mã không có trong danh sách niêm yết của vnstock (gõ sai, đã hủy niêm yết). Xem gợi ý trong cảnh báo |
 | `data_quality_error` với mã ít giao dịch | Phiên hôm nay mã không có giao dịch nên thiếu nến. Chạy lại ở phiên có giao dịch |
-| Người dùng không nhận được kết quả | Kiểm tra dòng của họ trong `users` (`chat_id`, `bot_token_env`), và họ đã `/start` bot trong chat riêng. Với bot riêng: biến tương ứng trong `users.env` và đã `docker compose up -d worker`. Log worker: `alert_skipped` (thiếu token) hoặc `alert_send_failed` |
+| Người dùng không nhận được kết quả | Kiểm tra dòng của họ trong `users` (`chat_id`, `bot_token_env`), biến tương ứng trong `secrets/users.env`, và họ đã `/start` bot riêng. Log worker: `alert_skipped` (thiếu token) hoặc `alert_send_failed` |
 | Kết quả của một người lại về nhóm ops | Người đó chưa có dòng trong `users`, hoặc yêu cầu được gửi từ nhóm chung (profile `default`) |
-| Chat riêng nhưng tool trả `no_personal_scope` | Tin nhắn không khớp luật nào trong `profile_routes` nên vào `default`: kiểm tra `user_id`/`chat_id` của luật (phải để trong ngoặc kép), user id có trong `TELEGRAM_ALLOWED_USERS`, rồi `hermes config check` và restart gateway |
-| Bot không trả lời tin nhắn riêng | User id chưa có trong `TELEGRAM_ALLOWED_USERS` của `~/.hermes/.env` (mặc định từ chối mọi tin nhắn riêng) |
-| Profile mới có Gateway = `stopped` trong `hermes profile list` | Bình thường khi dùng bot chung: profile không có bot riêng, gateway của `default` phục vụ nó qua `profile_routes` |
+| Tool trả `no_personal_scope` dù đang chat với bot riêng | Người dùng đang nhắn bot chung chứ không phải bot riêng của họ, hoặc profile thiếu `VNMCP_USER_ID` (chạy lại `ops/add_user.sh`) |
+| Bot riêng không trả lời | `grep "(profile: <tên>)" ~/.hermes/logs/gateway.log`: `✗ telegram failed to connect` = token sai/bị thu hồi; không có dòng nào = gateway chưa quét (chờ 30 giây). User id phải có trong `TELEGRAM_ALLOWED_USERS` của `~/.hermes/profiles/<tên>/.env`. Lần đầu người dùng phải nhắn `/start`; Hermes không trả lời riêng lệnh này |
+| Tin nhắn mất khi gateway restart | `platforms.telegram.extra.drop_pending_on_cold_boot: true` (mặc định) bỏ tin tới trong lúc gateway tắt. Thêm/xóa người dùng không restart nên không gặp; với restart chủ động thì chọn lúc ít người dùng |
+| `hermes profile list` báo Gateway = `running` nhưng bot không chạy | Cột này chỉ cho biết profile được gateway phục vụ, không phải bot đã kết nối. Xem dòng `(profile: <tên>)` trong `gateway.log` |
 | Báo cáo ghi "tạm tính trong phiên" | Đúng thiết kế. Kết luận chính thức có sau 15:20 |
 | Giá lịch sử có khoảng trống giả quanh ngày GDKHQ | Vendor đã điều chỉnh giá. close_sync tự tải lại; kiểm tra log `close_sync_done` → `rebased` |
 | Kết nối DB treo tới timeout | URL đang dùng `postgres:5432`. Đổi sang `postgres:5433` |
@@ -471,7 +443,8 @@ Cần client `pg_dump` phiên bản 16. Nếu host khác phiên bản, chạy tr
 - Kết quả phân tích theo lịch của mã trong danh sách theo dõi không được gửi chủ động cho người theo dõi; họ xem bằng `/danhsach`.
 - Danh mục riêng chỉ dùng được trong chat riêng (hoặc nhóm riêng đã có luật). Trong nhóm chung, mọi người chỉ phân tích mã, với nhãn chung.
 - Trong nhóm riêng có luật, câu trả lời vẫn hiển thị cho mọi thành viên nhóm; định tuyến chỉ ngăn người khác thao tác danh mục, không ngăn họ đọc tin trong nhóm.
-- Một bot chung là một điểm lỗi chung: lộ token hoặc bot bị chặn thì ảnh hưởng mọi người dùng.
+- Mọi bot vẫn chạy trong một tiến trình gateway: gateway lỗi, nâng cấp Hermes hay sửa cấu hình chung thì mọi người dùng cùng gián đoạn.
+- Mỗi người dùng mới cần tạo tay một bot ở @BotFather.
 - Hermes vẫn có thể tự tạo skill mới (khác tên) từ các cuộc chat. Skill chung yêu cầu không làm vậy cho phân tích cổ phiếu VN, nhưng đó là hướng dẫn, không phải rào chắn. Thỉnh thoảng kiểm tra `hermes -p <tên> skills list` và xóa skill `vn-…` lạ.
 - Không giới hạn số mã mỗi người theo dõi. Mỗi mã thêm vào làm tăng số lần gọi vnstock ở mỗi mốc theo lịch (giới hạn 60 lần/phút).
 - "Nhận định" đã lưu (`report_commentary`) dùng chung theo mã. Người đang giữ và người không giữ thấy nhãn khác nhau nên dấu vân tay số liệu khác nhau, và nhận định sẽ bị viết lại khi hai nhóm luân phiên hỏi cùng một mã.

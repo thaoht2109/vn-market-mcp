@@ -63,7 +63,7 @@ if mode == "plan":
 
 # --- drop this user's routes (others untouched) ---
 lines = text.splitlines(keepends=True)
-if "  profile_routes:\n" in lines:
+if mine and "  profile_routes:\n" in lines:  # untouched (formatting too) when the user had no route
     s = lines.index("  profile_routes:\n")
     e = s + 1
     while e < len(lines) and (lines[e].startswith("    ") or lines[e].startswith("  - ")):
@@ -81,7 +81,7 @@ if user_id:
     assert r is None or r.profile != name
 
 # --- revoke Telegram access, keeping ids that another route still needs ---
-env = env_path.read_text()
+env = orig_env = env_path.read_text()
 
 def drop_from_list(env, key, values):
     m = re.search(rf"^{key}=(.*)$", env, re.M)
@@ -93,7 +93,8 @@ def drop_from_list(env, key, values):
 if user_id and user_id not in other_users:
     env = drop_from_list(env, "TELEGRAM_ALLOWED_USERS", {user_id})
 env = drop_from_list(env, "TELEGRAM_GROUP_ALLOWED_CHATS", set(groups))
-env_path.write_text(env)
+if env != orig_env:  # an unchanged .env keeps its signature: the default bot is not rebuilt
+    env_path.write_text(env)
 print(f"   routes left: {[r.name for r in left]}")
 PY
 }

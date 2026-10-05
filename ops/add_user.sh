@@ -185,12 +185,20 @@ if answer is None:
     print("   gateway không trả lời lệnh quét; nó tự quét lại trong 30 giây")
 PY
 
-# The bot connects in the background; look for this profile's adapter failing to start.
-sleep 15
-FAIL=$(docker exec "$HERMES" awk -v t="$START_TS" '$1" "$2 >= t' /opt/data/logs/gateway.log \
-       | grep -E "profile '$NAME'|profile=$NAME" | grep -i -E "fail|error|conflict" || true)
-if [[ -n "$FAIL" ]]; then
-  echo "Bot của profile $NAME chưa chạy được:" >&2; echo "$FAIL" >&2; exit 1
+# The bot connects in the background; the gateway logs "✓/✗ telegram ... (profile: <tên>)".
+# Wait for a line from this run; none (nothing changed, so no reconnect) → judge by the latest one.
+STATUS=""
+for _ in $(seq 1 9); do
+  sleep 5
+  STATUS=$(docker exec "$HERMES" awk -v t="$START_TS" '$1" "$2 >= t' /opt/data/logs/gateway.log \
+           | grep -E "telegram .*\(profile: $NAME\)" | tail -1 || true)
+  [[ -n "$STATUS" ]] && break
+done
+[[ -n "$STATUS" ]] || STATUS=$(docker exec "$HERMES" grep -E "telegram .*\(profile: $NAME\)" /opt/data/logs/gateway.log | tail -1 || true)
+echo "   $STATUS"
+if ! grep -q "✓ telegram" <<<"$STATUS"; then
+  echo "Bot của profile $NAME chưa kết nối được Telegram (xem log trên và: docker logs $HERMES)." >&2
+  exit 1
 fi
 docker exec "$HERMES" hermes -p "$NAME" mcp test vn-market-mcp 2>&1 | grep -E "Connected|Tools discovered|rror" || true
 
