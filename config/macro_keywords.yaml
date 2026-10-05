@@ -1,0 +1,10 @@
+# Lọc tầng 1: khớp nguyên từ, không phân biệt hoa thường. Thiên về recall: thêm từ khóa dễ hơn bớt.
+tien_te: [lãi suất điều hành, tái cấp vốn, tái chiết khấu, OMO, tín phiếu, liên ngân hàng, lãi suất qua đêm, tín dụng, cung tiền, NHNN, Ngân hàng Nhà nước, dự trữ bắt buộc]
+ty_gia_doi_ngoai: [tỷ giá, USD/VND, dự trữ ngoại hối, xuất khẩu, nhập khẩu, FDI, thuế quan, cán cân thương mại, xuất siêu, nhập siêu]
+tang_truong: [GDP, PMI, IIP, bán lẻ, đầu tư công, giải ngân, tăng trưởng kinh tế, sản xuất công nghiệp]
+lam_phat: [CPI, lạm phát, giá xăng, giá điện, giá thịt heo]
+tai_khoa_chinh_sach: [nghị quyết, thông tư, nghị định, thuế, trái phiếu chính phủ, trái phiếu doanh nghiệp, ngân sách, bội chi, Bộ Tài chính]
+thi_truong_von: [nâng hạng, khối ngoại, tự doanh, margin, UBCK, KRX, VN-Index]
+toan_cau: [Fed, FOMC, lợi suất trái phiếu Mỹ, DXY, giá dầu, Trung Quốc, ECB, OPEC, chiến tranh thương mại]
+# Loại trừ có ưu tiên cao hơn trụ cột. Chỉ cụm rõ ràng là quảng cáo/đời sống.
+exclude: [doanh nghiệp giới thiệu, khuyến mãi, giá vàng nhẫn hôm nay, giá vàng hôm nay, xổ số, bóng đá, tử vi, thời tiết]
