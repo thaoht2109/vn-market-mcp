@@ -13,6 +13,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp_server.tools.digests import get_market_digest_input_tool, get_weekly_digest_input_tool
 from mcp_server.tools.explain import explain_run_tool
 from mcp_server.tools.history import query_history_tool
+from mcp_server.tools.macro import get_macro_context_tool
 from mcp_server.tools.positions import clear_position_tool, set_position_tool
 from mcp_server.tools.predictions import list_predictions_tool
 from mcp_server.tools.run_analysis import get_job_status_tool, run_analysis_tool
@@ -142,6 +143,13 @@ def get_market_digest_input() -> dict[str, Any]:
 def get_weekly_digest_input() -> dict[str, Any]:
     """Dữ kiện cho bản tin tuần: VN-Index, VN30 tăng/giảm 5 phiên, khối ngoại, phân bố nhãn, tin trong tuần."""
     return get_weekly_digest_input_tool()
+
+
+@mcp.tool()
+def get_macro_context(days: int = 7) -> dict[str, Any]:
+    """Tin vĩ mô đã lọc theo 7 trụ cột (tiền tệ, tỷ giá, tăng trưởng, lạm phát, tài khóa, thị trường vốn, toàn cầu)
+    trong N ngày (1-30), kèm độ mới của từng nguồn tin. Nguồn quá hạn có cảnh báo: không có tin ≠ không có sự kiện."""
+    return get_macro_context_tool(days)
 
 
 if __name__ == "__main__":

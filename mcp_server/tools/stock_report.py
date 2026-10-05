@@ -38,6 +38,15 @@ def fingerprint(snapshot: dict, closes: list, flow: list, news: list = ()) -> st
     return hashlib.sha256(json.dumps(core, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _news_rows(conn, ticker: str) -> list[tuple]:
+    """Last 7 days of headlines for the ticker, minus those the tier-1 filter dropped (vnstock news has no verdict: kept)."""
+    return conn.execute(
+        "SELECT published_at, title, source FROM news_items WHERE %s = ANY(tickers)"
+        " AND filter_status IS DISTINCT FROM 'dropped'"
+        " AND published_at >= now() - interval '7 days' ORDER BY published_at DESC LIMIT 5", (ticker,),
+    ).fetchall()
+
+
 def _load(ticker: str, run_id: str):
     """Everything the report is built from, or (None, reason)."""
     got = get_snapshot_tool(run_id=run_id)
@@ -65,10 +74,7 @@ def _load(ticker: str, run_id: str):
             " WHERE f.ticker = %s AND abs(f.net_value) <= p.close * p.volume"  # drop implausible rows
             " ORDER BY f.trade_date DESC LIMIT 5", (ticker,),
         ).fetchall()
-        news = conn.execute(
-            "SELECT published_at, title, source FROM news_items WHERE %s = ANY(tickers)"
-            " AND published_at >= now() - interval '7 days' ORDER BY published_at DESC LIMIT 5", (ticker,),
-        ).fetchall()
+        news = _news_rows(conn, ticker)
         try:
             in_session = is_trading_hours(conn, run_as_of, trading_hours)
         except NoCalendarDataError:
