@@ -59,10 +59,25 @@ Implementation plan: ../docs/superpowers/plans/2026-09-30-vn-trading-agent-phase
   evals/compare_models.py         golden-sample harness for comparing Claude
                                    models on news-classification quality
 
+Implemented since Phase 1 (2026-10-05):
+  + Background worker + job queue (ops/worker.py, pipeline/jobs.py)
+  + Cron scheduler with intraday slots (ops/scheduler.py: 09:15/11:00/13:00 VN,
+    close_sync 15:05, official verdict 15:20, retry 18:00)
+  + Session-aware label (provisional_label in action_label.py): in-session runs
+    show/store only downgrades when stop breached or >2 ATR move, upgrades wait
+    for closing prices; snapshot.session records live vs official label
+  + Price rebasing detection (sync_recent_prices): detects vnstock dividend/split
+    re-adjustments and reloads full history
+  + Real scoring components: technical trend (MA/RSI/MACD), fundamental valuation
+    (P/E/P/B vs own quarters + peers), foreign flow normalized to traded value,
+    market breadth (VN30 advancers, % above MA50, liquidity ratio)
+  + Cleaned: removed llm/batch.py (dead code), dropped LLM keys from worker
+    (llm.pipeline_enabled: false makes them unused)
+
 NOT in this phase (by design — see the plan's roadmap for later phases):
-  - Telegram / chat interface
-  - Cron scheduler / job queue / worker
-  - Any LLM-backed role (news, macro, synthesis, Bull/Bear)
+  - Telegram / chat interface (only ops alerting on error)
+  - Any LLM-backed role (news, macro, synthesis, Bull/Bear) — disabled, kept for
+    future re-enable via llm.pipeline_enabled: true in vn-rules.yaml
   - Prediction grading / forward-test scoring
   - Data retention / archival jobs
 
