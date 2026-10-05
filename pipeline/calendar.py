@@ -97,20 +97,6 @@ def calendar_covers(conn: psycopg.Connection, as_of: date) -> bool:
     return max_date >= as_of
 
 
-def next_trading_day(conn: psycopg.Connection, d: date) -> date:
-    row = conn.execute(
-        """
-        SELECT trade_date FROM trading_calendar
-        WHERE trade_date > %s AND is_trading_day = true
-        ORDER BY trade_date ASC LIMIT 1
-        """,
-        (d,),
-    ).fetchone()
-    if row is None:
-        raise NoCalendarDataError(f"no trading day found after {d}")
-    return row[0]
-
-
 def is_trading_hours(conn: psycopg.Connection, now: datetime, trading_hours_cfg: dict) -> bool:
     """§4.4: whether `now` falls inside continuous-trading session hours on a
     trading day. Used to decide the cache-reuse window for chat requests

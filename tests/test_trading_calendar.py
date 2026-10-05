@@ -8,7 +8,6 @@ from pipeline.calendar import (
     is_trading_day,
     is_trading_hours,
     latest_trading_day,
-    next_trading_day,
     seed_calendar_from_weekdays,
 )
 
@@ -46,11 +45,6 @@ def test_latest_trading_day_before_session_opens_uses_previous_day(db_conn):
     assert latest_trading_day(db_conn, datetime(2026, 10, 5, 10, 0, tzinfo=vn)) == date(2026, 10, 5)
     # 00:30 VN Tuesday is still Monday in UTC — must resolve in VN time, pre-open -> Monday
     assert latest_trading_day(db_conn, datetime(2026, 10, 5, 17, 30, tzinfo=timezone.utc)) == date(2026, 10, 5)
-
-
-def test_next_trading_day_skips_weekend(db_conn):
-    seed_calendar_from_weekdays(db_conn, date(2026, 8, 31), date(2026, 9, 8), holidays=set())
-    assert next_trading_day(db_conn, date(2026, 9, 4)) == date(2026, 9, 7)  # Fri -> next Mon
 
 
 def test_is_trading_hours_true_during_morning_session(db_conn):

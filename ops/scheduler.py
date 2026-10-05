@@ -39,7 +39,6 @@ SCHEDULE = [
 # so ops/worker.py runs the slow news-fetch + LLM call, not this loop — a
 # flaky news API stalling here would delay/skip scheduled_post and the
 # Friday weekly job, which share this same process and thread.
-MACRO_JOB_KEY_PREFIX = MACRO_JOB_TYPE
 MACRO_TICKER = "MARKET"
 MACRO_TRIGGER = (1, 30)
 
