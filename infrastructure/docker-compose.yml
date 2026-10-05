@@ -69,6 +69,10 @@ services:
     <<: *app
     command: ["python", "-m", "ops.scheduler"]
     environment:
+      # Table-owner connection, used only to CREATE news_items partitions (pipeline_rw cannot do DDL).
+      ADMIN_DATABASE_URL: postgresql://${POSTGRES_ADMIN_USER:-vnmcp_admin}:${POSTGRES_ADMIN_PASSWORD:-changeme_local_only}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-vnmcp}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALERT_CHAT_ID: ${TELEGRAM_ALERT_CHAT_ID:-}
       PIPELINE_RW_DATABASE_URL: postgresql://pipeline_rw:${PIPELINE_RW_PASSWORD:?set PIPELINE_RW_PASSWORD in infrastructure/.env}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-vnmcp}
 
   # Grades open predictions at the 20/60/120-session horizons into prediction_outcomes,

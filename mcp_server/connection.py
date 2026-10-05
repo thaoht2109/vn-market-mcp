@@ -37,3 +37,17 @@ def get_retention_conn():
         raise
     finally:
         conn.close()
+
+
+@contextmanager
+def get_admin_conn():
+    """Table owner. Used only for DDL the pipeline role cannot do (creating news_items partitions)."""
+    conn = psycopg.connect(os.environ["ADMIN_DATABASE_URL"])
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
