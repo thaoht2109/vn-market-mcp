@@ -1,6 +1,6 @@
 # vn-market-mcp
 
-Đường ống dữ liệu và phân tích cổ phiếu Việt Nam, cung cấp kết quả cho trợ lý chat **Hermes** qua giao thức **MCP**. Hệ thống phân tích VN30 cùng mọi mã niêm yết mà người dùng yêu cầu hoặc theo dõi. Nhiều người dùng có thể dùng chung một hệ thống mà dữ liệu cá nhân (vị thế, danh sách theo dõi, lịch sử chat, kết quả gửi về) không bị chia sẻ cho nhau.
+Đường ống dữ liệu và phân tích cổ phiếu Việt Nam, cung cấp kết quả cho trợ lý chat **Hermes** qua giao thức **MCP**. Hệ thống phân tích VN30 cùng mọi mã niêm yết mà người dùng yêu cầu hoặc theo dõi. Nhiều người dùng có thể dùng chung một hệ thống, mỗi người một bot Telegram riêng, mà dữ liệu cá nhân (vị thế, danh sách theo dõi, bộ nhớ và lịch sử chat) không bị chia sẻ cho nhau.
 
 > **Tuyên bố miễn trừ:** Đây là công cụ hỗ trợ nghiên cứu, **không phải tư vấn đầu tư** và **không tự đặt lệnh**. Mọi rủi ro giao dịch do người dùng tự chịu.
 
@@ -21,6 +21,7 @@
 13. [Sao lưu và khôi phục](#13-sao-lưu-và-khôi-phục)
 14. [Xử lý sự cố](#14-xử-lý-sự-cố)
 15. [Hạn chế đã biết](#15-hạn-chế-đã-biết)
+16. [Nhật ký thay đổi](#16-nhật-ký-thay-đổi)
 
 Mục 10 có phần [Nhiều người dùng](#nhiều-người-dùng-dữ-liệu-tách-riêng).
 
@@ -34,7 +35,7 @@ Mục 10 có phần [Nhiều người dùng](#nhiều-người-dùng-dữ-liệu
 - Nhãn hành động: `buy_accumulate` / `watch` / `hold` / `reduce_exit` / `stay_out`.
 - Pipeline không gọi LLM (`llm.pipeline_enabled: false`). LLM duy nhất là Hermes, chỉ chạy khi người dùng hỏi. Hermes viết phần "Nhận định", và phần này phải qua bộ kiểm tra tất định trước khi được lưu hoặc gửi đi.
 - **Fail-closed:** thiếu dữ liệu, lịch giao dịch hay độ phủ thì trả trạng thái lỗi rõ ràng, không đoán.
-- **Dữ liệu chung, góc nhìn riêng:** mỗi mã chỉ được tải và phân tích một lần cho mọi người dùng, và nhãn lưu lại không phụ thuộc vị thế của ai. Phần riêng của từng người (vị thế, danh sách theo dõi, nhãn theo vị thế, kết quả gửi về) được tách theo `user_id`.
+- **Dữ liệu chung, góc nhìn riêng:** mỗi mã chỉ được tải và phân tích một lần cho mọi người dùng, và nhãn lưu lại không phụ thuộc vị thế của ai. Phần riêng của từng người (vị thế, danh sách theo dõi, nhãn theo vị thế, bot và profile Hermes) được tách theo Telegram user id.
 
 Tài liệu thiết kế: `../vn-trading-agent-plan_final.md`. Kế hoạch triển khai: `../docs/superpowers/plans/2026-09-30-vn-trading-agent-phase-0-1.md`.
 
@@ -129,7 +130,7 @@ python -c "from db.connection import get_conn; from db.migrate import apply_migr
 python -m db.setup_roles
 ```
 
-Lệnh tạo role sẽ tạo `mcp_ro` (chỉ đọc), `pipeline_rw` (SELECT, INSERT, UPDATE) và `retention_job` (SELECT và DELETE). Quyền được cấp trên các bảng **đang có**, nên sau mỗi migration tạo bảng mới (ví dụ `015`, `016`) phải chạy lại `python -m db.setup_roles`.
+Lệnh tạo role sẽ tạo `mcp_ro` (chỉ đọc), `pipeline_rw` (SELECT, INSERT, UPDATE) và `retention_job` (SELECT và DELETE). Quyền được cấp trên các bảng **đang có**, nên sau mỗi migration tạo bảng mới phải chạy lại `python -m db.setup_roles`.
 
 **5.3. Nạp dữ liệu gốc (chạy một lần, trong venv có vnstock)**
 
@@ -247,7 +248,7 @@ Các ngưỡng nhãn nằm ở `action_labels` trong `vn-rules.yaml`.
 | `stay_out` dù điểm ≥ `watch.min_score` (bị hạ nhãn) | `stay_out` | `reduce_exit` |
 | Các trường hợp còn lại (`buy_accumulate`, `watch`, `stay_out` với điểm 40–55) | giữ nguyên | `hold` |
 
-Nhãn theo vị thế được áp dụng ở `get_snapshot`, `get_stock_report`, `list_watchlist` và tin nhắn kết quả của worker. Snapshot lưu thêm `data_stale` để tính được bảng trên; snapshot không có trường điểm (file cũ hoặc đã bị xóa) thì giữ nguyên nhãn chung. `list_predictions` và `get_stats` luôn trả nhãn chung.
+Nhãn theo vị thế được áp dụng ở `get_snapshot`, `get_stock_report` và `list_watchlist`. Snapshot lưu thêm `data_stale` để tính được bảng trên; snapshot không có trường điểm (file cũ hoặc đã bị xóa) thì giữ nguyên nhãn chung. `list_predictions` và `get_stats` luôn trả nhãn chung.
 
 ## 10. MCP server và Hermes
 
@@ -276,7 +277,7 @@ Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trư
 - Dùng thuật ngữ nội bộ.
 - Độ dài ngoài khoảng 80–220 từ.
 
-**Kết nối Hermes** (gateway chạy bằng `../hermes_agent/hermes-docker-compose`):
+**Kết nối Hermes** (container `hermes-gateway`, dựng bằng file compose riêng của Hermes, ngoài repo này; `~/.hermes` trên host là `/opt/data` trong container):
 
 - Gateway mount dự án này ở chế độ chỉ đọc tại `/opt/vn-market-mcp` và tham gia mạng `vn-market-mcp_default`. URL kết nối DB phải dùng `postgres:5433`, **không** dùng `5432` vì cổng này bị một rule iptables trên host chặn.
 - Venv riêng nằm ở `/opt/data/vn-market-mcp-venv`, được dựng bởi `ops/setup_venv.sh` (init container `mcp-venv-init`).
@@ -284,13 +285,15 @@ Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trư
 - Đăng ký và kiểm tra:
 
   ```bash
-  docker compose exec gateway hermes mcp add vn-market-mcp \
+  docker exec hermes-gateway hermes mcp add vn-market-mcp \
     --command /opt/data/vn-market-mcp-venv/bin/run-vn-market-mcp \
     --env MCP_RO_DATABASE_URL=postgresql://mcp_ro:<pw>@postgres:5433/vnmcp \
           PIPELINE_RW_DATABASE_URL=postgresql://pipeline_rw:<pw>@postgres:5433/vnmcp \
     --connect-timeout 60
-  docker compose exec gateway hermes mcp test vn-market-mcp
+  docker exec hermes-gateway hermes mcp test vn-market-mcp
   ```
+
+  Profile tạo bằng `ops/add_user.sh` nhận khai báo này qua `--clone`, cộng thêm `VNMCP_USER_ID`.
 
 - Stdout của MCP stdio chỉ được chứa JSON-RPC. Mọi log đi qua stderr (`ops/alerting.py`).
 - Skill `vn-stock-analyze` được nạp qua `skills.external_dirs: [/opt/vn-market-mcp/.hermes/skills]` trong `config.yaml` của **mọi** profile. Xem mục "Skill dùng chung, góc nhìn riêng" bên dưới.
@@ -315,7 +318,16 @@ Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trư
 
 Profile `default` không đặt `VNMCP_USER_ID`, nên MCP server của nó không có phạm vi cá nhân nào. Danh tính chỉ đến từ biến môi trường của profile, không bao giờ từ nội dung chat hay tham số do mô hình điền. Hai profile khai báo cùng tên server `vn-market-mcp` nhưng khác `env` thì Hermes không dùng chung kết nối MCP, nên mỗi profile có tiến trình MCP riêng gắn với đúng người.
 
-**Thêm và xóa người dùng không cần restart.** Hermes gateway chạy chế độ nhiều profile: khi một profile được tạo, xóa, hoặc `config.yaml`/`.env` của nó đổi, gateway chỉ bật, tắt hoặc kết nối lại bot của đúng profile đó (lệnh quét `rescan-profiles`, và tự quét mỗi 30 giây), bot của người khác không bị đụng tới. Worker không liên quan tới bot của người dùng nên không bị đụng tới. Chỉ những thay đổi chung (nâng cấp Hermes, sửa `~/.hermes/config.yaml` của `default`, sửa skill chung) mới cần restart gateway.
+**Thêm và xóa người dùng không cần restart.** Hermes gateway chạy chế độ nhiều profile: khi một profile được tạo, xóa, hoặc `config.yaml`/`.env` của nó đổi, gateway chỉ bật, tắt hoặc kết nối lại bot của đúng profile đó (lệnh quét `rescan-profiles`, và tự quét mỗi 30 giây), bot của người khác không bị đụng tới. Worker không liên quan tới bot của người dùng nên không bị đụng tới. Chỉ những thay đổi chung mới cần restart gateway:
+
+| Thay đổi | Cần làm |
+|---|---|
+| Thêm, xóa, đổi token hay nhóm của một người dùng | Không restart (`ops/add_user.sh`, `ops/remove_user.sh`) |
+| Code `mcp_server/` hoặc skill chung (`.hermes/skills/`) sau khi merge vào `main` | `docker restart -t 60 hermes-gateway` |
+| `~/.hermes/config.yaml` hoặc `~/.hermes/.env` của `default` (bot chung, nhóm chung) | `docker restart -t 60 hermes-gateway` |
+| Code pipeline/worker/scheduler | `docker compose up -d --build worker scheduler` (không đụng tới chat) |
+
+Restart gateway làm mọi người dùng gián đoạn khoảng 40 giây, và tin nhắn tới trong lúc đó bị bỏ (`drop_pending_on_cold_boot`). Nên làm ngoài giờ giao dịch; `-t 60` cho câu trả lời đang viết kịp xong thay vì bị cắt sau 10 giây mặc định.
 
 #### Thêm người dùng
 
@@ -340,7 +352,9 @@ Lệnh làm, không restart gì:
 | Dọn cấu hình cũ | Luật `profile_routes` và id trong danh sách cho phép của bot chung từ thời dùng bot chung (nếu có): xóa khỏi file, gateway bỏ ở lần restart tới |
 | Bật bot | Gọi `rescan-profiles`, chờ log `✓ telegram connected (profile: <tên>)`; báo lỗi và trả mã khác 0 nếu thấy `✗ telegram failed to connect`. Cuối cùng `mcp test` |
 
-Chạy lại với cùng tham số thì không đổi gì; với tham số mới thì cập nhật. Cấu hình Hermes cũ được sao lưu vào `~/.hermes/backups/add_user-<thời điểm>/`. Biến môi trường tùy chọn: `HERMES_CONTAINER` (mặc định `hermes-gateway`), `COMPOSE_PROJECT_NAME` (mặc định `vn-market-mcp`).
+Chạy lại với cùng tham số thì không đổi gì; với tham số mới (đổi token, thêm nhóm) thì cập nhật. Cấu hình Hermes cũ được sao lưu vào `~/.hermes/backups/add_user-<thời điểm>/`. Biến môi trường tùy chọn: `HERMES_CONTAINER` (mặc định `hermes-gateway`).
+
+**Chuyển người dùng từ bot chung sang bot riêng** (cách cũ, định tuyến bằng `gateway.profile_routes` trên bot chung): chỉ cần chạy `ops/add_user.sh` với token bot riêng. Lệnh tự xóa luật định tuyến và id của người đó khỏi cấu hình bot chung; gateway bỏ chúng ở lần restart tới, trước đó chúng vẫn trỏ đúng profile nên vô hại.
 
 #### Xóa người dùng
 
@@ -357,7 +371,7 @@ ops/remove_user.sh <tên> --yes    # không hỏi (dùng trong script)
 
 Trước khi xóa, lệnh sao lưu `config.yaml`, `.env` và bản lưu trữ profile (`hermes profile export`) vào `~/.hermes/backups/remove_user-<thời điểm>/`, và các dòng DB thành CSV trong `backups/remove_user-<tên>-<thời điểm>/`. Dữ liệu dùng chung và lịch sử job không bị đụng tới. Sau khi xóa nên thu hồi token ở @BotFather (`/revoke` hoặc `/deletebot`).
 
-Khôi phục nếu xóa nhầm: `hermes profile import <bản lưu trữ>`, chạy lại `ops/add_user.sh` với cùng tham số, rồi nạp lại các CSV bằng `\copy`.
+Khôi phục nếu xóa nhầm: `hermes profile import <bản lưu trữ>`, chạy lại `ops/add_user.sh` với cùng tham số, rồi nạp lại các CSV bằng `\copy`. Biến môi trường tùy chọn: `HERMES_CONTAINER` (mặc định `hermes-gateway`), `COMPOSE_PROJECT_NAME` (mặc định `vn-market-mcp`, dùng cho `docker compose exec postgres`).
 
 ### Skill dùng chung, góc nhìn riêng
 
@@ -370,7 +384,7 @@ Mỗi người dùng có lập luận và góc nhìn thị trường khác nhau,
 
 - **Skill chung không bị sửa theo từng người.** Hermes coi skill trong `external_dirs` là chỉ đọc: bộ dọn skill hằng tuần (`curator`) và cơ chế tự sửa skill sau mỗi cuộc chat đều bỏ qua nó. Thư mục repo còn được mount chỉ đọc vào container, nên không có cách nào ghi vào. Bản thân skill cũng yêu cầu Hermes không sửa nó và không tạo skill thay thế.
 - **Góc nhìn cá nhân chỉ đổi cách trình bày, không đổi kết luận.** Nhãn, con số và ngưỡng cắt lỗ đến từ code; `save_commentary` còn từ chối "Nhận định" lạc quan hơn nhãn. Khi quan điểm của người dùng trái với hệ thống, Hermes phải nói rõ là trái và chỉ ra dữ kiện ủng hộ hoặc bác bỏ.
-- **Sửa luật chung:** sửa `SKILL.md` trong repo, merge vào `main` (gateway mount thư mục repo này), rồi `docker restart hermes-gateway`. Mọi profile nhận cùng một bản.
+- **Sửa luật chung:** sửa `SKILL.md` trong repo, merge vào `main` (gateway mount thư mục repo này), rồi `docker restart -t 60 hermes-gateway` ngoài giờ. Mọi profile nhận cùng một bản.
 - **Điều Hermes học được về hệ thống** (một lỗi dữ liệu, một hành vi lạ của tool) được ghi vào bộ nhớ của profile phát hiện ra. Người vận hành quyết định có đưa vào skill chung hay không.
 
 Trước đây Hermes dùng hai skill do chính nó viết (`research/vn-market-mcp-analysis`, `research/vn-stock-analysis`), mỗi profile một bản sao và tự sửa riêng. Nội dung hữu ích của chúng đã được gộp vào `vn-stock-analyze`; bản gốc được chuyển vào `~/.hermes/backups/skills-retired-<thời điểm>/`.
@@ -436,11 +450,27 @@ Cần client `pg_dump` phiên bản 16. Nếu host khác phiên bản, chạy tr
 - Các vai trò LLM trong `llm/` (news digest, bull/bear, verifier, synthesis, macro) đang tắt và được giữ lại để đánh giá.
 - Dữ liệu khối ngoại của KBS chỉ có giá trị "hiện tại", không có lịch sử. Giá trị cuối ngày được chốt tại close_sync.
 - Kết quả phân tích theo lịch của mã trong danh sách theo dõi không được gửi chủ động cho người theo dõi; họ xem bằng `/danhsach`.
-- Danh mục riêng chỉ dùng được trong chat riêng (hoặc nhóm riêng đã có luật). Trong nhóm chung, mọi người chỉ phân tích mã, với nhãn chung.
-- Trong nhóm riêng có luật, câu trả lời vẫn hiển thị cho mọi thành viên nhóm; định tuyến chỉ ngăn người khác thao tác danh mục, không ngăn họ đọc tin trong nhóm.
+- Danh mục riêng chỉ dùng được với bot riêng (chat riêng, hoặc nhóm riêng khai báo bằng `group_id`). Trong nhóm chung, mọi người chỉ phân tích mã, với nhãn chung.
+- Trong nhóm riêng, bot chỉ trả lời chủ của nó, nhưng mọi thành viên nhóm đều đọc được câu trả lời. Muốn kín thì dùng chat riêng.
+- Kết quả phân tích theo yêu cầu chỉ đến qua câu trả lời của Hermes. Nếu Hermes ngừng chờ trước khi job xong (mã mới lần đầu, hoặc gateway restart), không có tin nhắn nào báo sau đó; người dùng phải hỏi lại.
+- Lỗi của job theo yêu cầu (`data_quality_error`, `insufficient_coverage`…) chỉ người hỏi thấy; nhóm ops không được báo, xem trong bảng `jobs`.
 - Mọi bot vẫn chạy trong một tiến trình gateway: gateway lỗi, nâng cấp Hermes hay sửa cấu hình chung thì mọi người dùng cùng gián đoạn.
 - Mỗi người dùng mới cần tạo tay một bot ở @BotFather.
 - Hermes vẫn có thể tự tạo skill mới (khác tên) từ các cuộc chat. Skill chung yêu cầu không làm vậy cho phân tích cổ phiếu VN, nhưng đó là hướng dẫn, không phải rào chắn. Thỉnh thoảng kiểm tra `hermes -p <tên> skills list` và xóa skill `vn-…` lạ.
 - Không giới hạn số mã mỗi người theo dõi. Mỗi mã thêm vào làm tăng số lần gọi vnstock ở mỗi mốc theo lịch (giới hạn 60 lần/phút).
 - "Nhận định" đã lưu (`report_commentary`) dùng chung theo mã. Người đang giữ và người không giữ thấy nhãn khác nhau nên dấu vân tay số liệu khác nhau, và nhận định sẽ bị viết lại khi hai nhóm luân phiên hỏi cùng một mã.
 - Khi lấp khoảng trống giá cho mã lâu không phân tích, nếu khoảng trống chứa ngày GDKHQ thì phần lịch sử cũ vẫn theo mức giá chưa điều chỉnh cho tới khi close_sync phát hiện và tải lại.
+
+## 16. Nhật ký thay đổi
+
+Các thay đổi lớn về cách dùng nhiều người (tháng 10/2026), mới nhất ở dưới:
+
+| Thay đổi | Migration | Ghi chú |
+|---|---|---|
+| Phân tích mọi mã niêm yết, không chỉ VN30: tự đăng ký mã, tự tải khoảng 3 năm lịch sử, lấp khoảng trống giá | — | `resolve_or_register_ticker`, `HISTORY_BACKFILL_DAYS` |
+| Danh sách theo dõi riêng từng người; mã được theo dõi vào lịch phân tích cùng VN30 | `015` | Khóa `watchlist_extra (ticker, added_by)`; tool `watch_ticker`, `unwatch_ticker`, `list_watchlist` |
+| Vị thế riêng từng người; nhãn lưu chung không phụ thuộc vị thế, nhãn theo vị thế tính khi đọc | `016` | Khóa `positions (ticker, declared_by)`; `personal_label`, `personalize` |
+| Danh tính chỉ từ `VNMCP_USER_ID` của profile; tool cá nhân không còn nhận `declared_by`; nhóm chung trả `no_personal_scope` | — | `mcp_server/identity.py` |
+| Một skill chung chỉ đọc (`skills.external_dirs`) thay cho hai skill Hermes tự viết; góc nhìn cá nhân nằm trong bộ nhớ profile | — | Skill cũ sao lưu ở `~/.hermes/backups/skills-retired-*` |
+| Từ bot chung + `gateway.profile_routes` chuyển sang mỗi người một bot riêng; `ops/add_user.sh`, `ops/remove_user.sh` không restart gateway | — | Thêm luật định tuyến cần restart; bot riêng thì không |
+| Worker chỉ gửi cảnh báo vận hành; Hermes trả lời mọi job theo yêu cầu, kể cả lần đầu của `watch_ticker` | `017` | Bỏ bảng `users` (tạo ở `016`) và token bot riêng phía worker |
