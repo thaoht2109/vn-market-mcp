@@ -9,16 +9,18 @@ from pathlib import Path
 
 from mcp_server.connection import get_ro_conn, get_rw_conn
 from mcp_server.envelope import build_envelope
-from mcp_server.identity import current_user
+from mcp_server.identity import no_personal_scope, pinned_user
 from pipeline.coverage import UnknownTickerError, classify_universe_tier, resolve_or_register_ticker
 from pipeline.jobs import enqueue
 from pipeline.positions import personalize
 from providers.vnstock_provider import VNStockProvider
 
 
-def watch_ticker_tool(ticker: str, declared_by: str | None = None) -> dict:
+def watch_ticker_tool(ticker: str) -> dict:
     now = datetime.now(timezone.utc)
-    declared_by = current_user(declared_by)
+    user = pinned_user()
+    if user is None:
+        return no_personal_scope(now)
     with get_rw_conn() as conn:
         try:
             match = resolve_or_register_ticker(conn, VNStockProvider(source="VCI"), ticker)
@@ -33,12 +35,12 @@ def watch_ticker_tool(ticker: str, declared_by: str | None = None) -> dict:
             VALUES (%s, %s, now(), now(), 'active')
             ON CONFLICT (ticker, added_by) DO UPDATE SET status = 'active', last_interaction_at = now()
             """,
-            (match.ticker, declared_by),
+            (match.ticker, user),
         )
         tier = classify_universe_tier(conn, match.ticker)
         # First analysis right away (it also backfills price history for a new ticker)
         # instead of waiting for the next scheduled slot. enqueue commits.
-        job_id, _ = enqueue(conn, match.ticker, job_type="on_demand", requested_by=f"watch:{declared_by}")
+        job_id, _ = enqueue(conn, match.ticker, job_type="on_demand", requested_by=f"watch:{user}")
     return build_envelope(
         {"status": "ok", "ticker": match.ticker, "name": match.name, "exchange": match.exchange,
          "universe_tier": tier, "job_id": job_id},
@@ -46,9 +48,11 @@ def watch_ticker_tool(ticker: str, declared_by: str | None = None) -> dict:
     )
 
 
-def unwatch_ticker_tool(ticker: str, declared_by: str | None = None) -> dict:
+def unwatch_ticker_tool(ticker: str) -> dict:
     now = datetime.now(timezone.utc)
-    declared_by = current_user(declared_by)
+    user = pinned_user()
+    if user is None:
+        return no_personal_scope(now)
     ticker = ticker.strip().upper()
     with get_rw_conn() as conn:
         row = conn.execute(
@@ -57,7 +61,7 @@ def unwatch_ticker_tool(ticker: str, declared_by: str | None = None) -> dict:
             WHERE ticker = %s AND added_by = %s AND status = 'active'
             RETURNING ticker
             """,
-            (ticker, declared_by),
+            (ticker, user),
         ).fetchone()
     if row is None:
         return build_envelope(
@@ -67,11 +71,13 @@ def unwatch_ticker_tool(ticker: str, declared_by: str | None = None) -> dict:
     return build_envelope({"status": "ok", "ticker": ticker}, sources=["postgres"], as_of=now)
 
 
-def list_watchlist_tool(declared_by: str | None = None) -> dict:
+def list_watchlist_tool() -> dict:
     """The user's watched tickers with each one's latest verdict as this user sees it (None = no
     prediction yet: still queued, or insufficient_coverage — get_snapshot says which)."""
     now = datetime.now(timezone.utc)
-    declared_by = current_user(declared_by)
+    user = pinned_user()
+    if user is None:
+        return no_personal_scope(now)
     items = []
     with get_ro_conn() as conn:
         rows = conn.execute(
@@ -87,16 +93,16 @@ def list_watchlist_tool(declared_by: str | None = None) -> dict:
             WHERE w.added_by = %s AND w.status = 'active'
             ORDER BY w.ticker
             """,
-            (declared_by,),
+            (user,),
         ).fetchall()
         for ticker, name, exchange, label, conf, label_at, snapshot_ref in rows:
             snapshot = {"action_label": label}
             if snapshot_ref and Path(snapshot_ref).exists():
                 snapshot = {**json.loads(Path(snapshot_ref).read_text()), "action_label": label}
-            view = personalize(conn, snapshot, ticker, declared_by)
+            view = personalize(conn, snapshot, ticker, user)
             items.append({
                 "ticker": ticker, "name": name, "exchange": exchange, "action_label": view["action_label"],
                 "holding_state": view["holding_state"], "confidence": float(conf) if conf is not None else None,
                 "label_as_of": label_at.isoformat() if label_at else None,
             })
-    return build_envelope({"declared_by": declared_by, "items": items}, sources=["postgres"], as_of=now)
+    return build_envelope({"user_id": user, "items": items}, sources=["postgres"], as_of=now)

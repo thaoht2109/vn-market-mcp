@@ -75,37 +75,40 @@ def get_stats() -> dict[str, Any]:
 
 
 @mcp.tool()
-def set_position(ticker: str, avg_cost: float | None, declared_by: str | None = None) -> dict[str, Any]:
+def set_position(ticker: str, avg_cost: float | None) -> dict[str, Any]:
     """Tự khai đang nắm giữ một mã (không suy luận từ dữ liệu khác). Vị thế là riêng của từng người;
-    với người đang giữ, nhãn họ thấy chuyển thành hold/reduce_exit."""
-    return set_position_tool(ticker, avg_cost, declared_by)
+    với người đang giữ, nhãn họ thấy chuyển thành hold/reduce_exit.
+
+    Các tool danh mục riêng (set/clear_position, watch/unwatch_ticker, list_watchlist) trả
+    status="no_personal_scope" trong nhóm chung: ở đó chỉ phân tích mã, không có danh mục riêng."""
+    return set_position_tool(ticker, avg_cost)
 
 
 @mcp.tool()
-def clear_position(ticker: str, declared_by: str | None = None) -> dict[str, Any]:
+def clear_position(ticker: str) -> dict[str, Any]:
     """Tự khai đã thoát vị thế một mã."""
-    return clear_position_tool(ticker, declared_by)
+    return clear_position_tool(ticker)
 
 
 @mcp.tool()
-def watch_ticker(ticker: str, declared_by: str | None = None) -> dict[str, Any]:
-    """Thêm một mã (kể cả ngoài VN30) vào danh sách theo dõi của người dùng declared_by.
+def watch_ticker(ticker: str) -> dict[str, Any]:
+    """Thêm một mã (kể cả ngoài VN30) vào danh sách theo dõi của người đang chat.
 
     Mã theo dõi được phân tích tự động cùng VN30 mỗi phiên; lần thêm xếp hàng một lần
     phân tích ngay (data.job_id). status="not_found" nếu mã không niêm yết."""
-    return watch_ticker_tool(ticker, declared_by)
+    return watch_ticker_tool(ticker)
 
 
 @mcp.tool()
-def unwatch_ticker(ticker: str, declared_by: str | None = None) -> dict[str, Any]:
-    """Bỏ một mã khỏi danh sách theo dõi của người dùng declared_by."""
-    return unwatch_ticker_tool(ticker, declared_by)
+def unwatch_ticker(ticker: str) -> dict[str, Any]:
+    """Bỏ một mã khỏi danh sách theo dõi của người đang chat."""
+    return unwatch_ticker_tool(ticker)
 
 
 @mcp.tool()
-def list_watchlist(declared_by: str | None = None) -> dict[str, Any]:
-    """Các mã người dùng declared_by đang theo dõi, kèm nhãn hành động gần nhất của từng mã."""
-    return list_watchlist_tool(declared_by)
+def list_watchlist() -> dict[str, Any]:
+    """Các mã người đang chat theo dõi, kèm nhãn hành động gần nhất của từng mã (theo vị thế của họ)."""
+    return list_watchlist_tool()
 
 
 @mcp.tool()
