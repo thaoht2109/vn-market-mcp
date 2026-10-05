@@ -1,0 +1,22 @@
+# Nguồn tin RSS. enabled=false cho tới khi URL được xác minh trả RSS hợp lệ.
+# Đã xác minh HTTP 200 + XML với User-Agent "vn-market-mcp/1.0" ngày 2026-10-06.
+- name: cafef_vi_mo
+  stream: A
+  url: https://cafef.vn/vi-mo-dau-tu.rss
+  every_minutes: 60
+  enabled: true
+- name: cafef_chung_khoan
+  stream: B
+  url: https://cafef.vn/thi-truong-chung-khoan.rss
+  every_minutes: 60
+  enabled: true
+- name: vnexpress_kinh_doanh
+  stream: A
+  url: https://vnexpress.net/rss/kinh-doanh.rss
+  every_minutes: 60
+  enabled: true
+- name: cafebiz_vi_mo
+  stream: A
+  url: https://cafebiz.vn/rss/vi-mo.rss
+  every_minutes: 60
+  enabled: true
