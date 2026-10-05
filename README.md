@@ -93,7 +93,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `pipeline/stock_report.py` | Render báo cáo cổ phiếu bằng code |
 | `pipeline/jobs.py`, `pipeline/grading.py` | Hàng đợi job, chấm dự báo |
 | `mcp_server/` | MCP server và 16 tool; `identity.py` xác định người gọi (`VNMCP_USER_ID`) |
-| `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, backup |
+| `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, backup, `add_user.sh` (thêm người dùng) |
 | `db/` | Migrations (`001`–`016`), tạo role, tạo DB test |
 | `llm/`, `schemas/` | Các vai trò LLM trong pipeline (đang **tắt**, giữ lại để bật sau) |
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
@@ -332,7 +332,17 @@ gateway:
 
 Profile `default` không đặt `VNMCP_USER_ID`, nên MCP server của nó không có phạm vi cá nhân nào. Danh tính chỉ đến từ biến môi trường của profile, không bao giờ từ nội dung chat hay tham số do mô hình điền.
 
-Thêm một người dùng:
+Thêm một người dùng bằng một lệnh, chạy trên host tại thư mục repo:
+
+```bash
+ops/add_user.sh <tên> <telegram_user_id> [group_id]
+# ví dụ: ops/add_user.sh lan 123456789
+#        ops/add_user.sh lan 123456789 -1001234567890   # kèm nhóm riêng (chỉ lan + bot)
+```
+
+Lệnh làm đủ 4 việc dưới đây, sao lưu cấu hình Hermes cũ vào `~/.hermes/backups/add_user-<thời điểm>/`, kiểm tra luật định tuyến (đúng người đúng chat vào profile mới, người khác thì không), restart gateway và chạy `mcp test` cho profile mới. Chạy lại với cùng tham số thì không đổi gì; chạy lại với tham số mới thì cập nhật (luật của người đó được thay theo tên). Có `group_id` thì kết quả phân tích được gửi vào nhóm riêng thay cho chat riêng. Profile mới tạo được xóa trắng `memories/USER.md`. Biến môi trường tùy chọn: `HERMES_CONTAINER` (mặc định `hermes-gateway`), `COMPOSE_PROJECT_NAME` (mặc định `vn-market-mcp`).
+
+Các bước lệnh thực hiện (làm tay nếu cần):
 
 1. Tạo profile (tên chỉ gồm chữ thường và số):
 
