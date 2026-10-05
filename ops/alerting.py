@@ -5,7 +5,6 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
 import httpx
 
@@ -59,32 +58,3 @@ def send_ops_alert(text: str) -> bool:
     chi ghi log va bo qua (khong lam crash job vi thieu cau hinh alert).
     """
     return send_telegram(os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_ALERT_CHAT_ID"), text)
-
-
-USERS_ENV = Path(os.environ.get("USERS_ENV_FILE", "secrets/users.env"))
-
-
-def _bot_token(name: str) -> str | None:
-    """Process env first (the shared TELEGRAM_BOT_TOKEN), else users.env read now: ops/add_user.sh
-    writes a new user's bot token there and the worker picks it up without a restart."""
-    if os.environ.get(name):
-        return os.environ[name]
-    try:
-        lines = USERS_ENV.read_text().splitlines()
-    except OSError:
-        return None
-    for line in lines:
-        key, sep, value = line.partition("=")
-        if sep and key.strip() == name:
-            return value.strip() or None
-    return None
-
-
-def send_user_message(conn, user_id: str, text: str) -> bool | None:
-    """Send to a registered user's own chat through their own Hermes bot (users table).
-    None = user not registered (caller decides on a fallback); False = send failed."""
-    row = conn.execute("SELECT chat_id, bot_token_env FROM users WHERE user_id = %s", (user_id,)).fetchone()
-    if row is None:
-        return None
-    chat_id, token_env = row
-    return send_telegram(_bot_token(token_env), chat_id, text)

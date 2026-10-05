@@ -64,44 +64,30 @@ def test_run_one_marks_job_failed_when_run_analysis_does_not_return_ok(db_conn):
         db_conn.commit()
 
 
-def test_on_demand_result_goes_only_to_the_requesting_users_chat_with_their_label(db_conn, monkeypatch, tmp_path):
-    import json
-
-    from pipeline.positions import set_position
-
-    snap = tmp_path / "s.json"
-    snap.write_text(json.dumps({"action_label": "watch", "composite_score": 60, "confidence": 0.7}))
-
-    insert_ticker(db_conn, "WORKERUSR")
-    db_conn.execute("DELETE FROM jobs WHERE ticker = 'WORKERUSR'")
-    db_conn.execute(
-        "INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings)"
-        " VALUES ('worker-usr-run', 'on_demand', ARRAY['WORKERUSR'], 'long', 'quick', now(), %s, '[]')", (str(snap),),
-    )
-    db_conn.execute("INSERT INTO users (user_id, chat_id, bot_token_env) VALUES ('alice', '111', 'TELEGRAM_BOT_TOKEN_ALICE')")
-    set_position(db_conn, "WORKERUSR", avg_cost=10.0, declared_by="alice")
+def test_only_ops_problems_reach_telegram(db_conn):
+    """Hermes answers on-demand jobs in the user's own chat (it polls get_job_status), so the worker
+    sends nothing for them; it only alerts the ops chat about scheduled-run data problems."""
+    insert_ticker(db_conn, "WORKERMSG")
+    db_conn.execute("DELETE FROM jobs WHERE ticker = 'WORKERMSG'")
     db_conn.commit()
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN_ALICE", "alice-token")
-    enqueue(db_conn, "WORKERUSR", job_type="on_demand", requested_by="user:alice")
-    enqueue(db_conn, "WORKERUSR", job_type="on_demand", requested_by="user:nobody")
-
-    ok = RunResult(run_id="worker-usr-run", status="ok", ticker="WORKERUSR", action_label="watch", message="")
+    enqueue(db_conn, "WORKERMSG", job_type="on_demand", requested_by="watch:alice")
+    enqueue(db_conn, "WORKERMSG", job_type="on_demand", requested_by="user:alice")
+    enqueue(db_conn, "WORKERMSG", job_type="scheduled_post", requested_by="cron")
+    results = [
+        RunResult(run_id="r1", status="ok", ticker="WORKERMSG", action_label="watch", message=""),
+        RunResult(run_id=None, status="data_quality_error", ticker="WORKERMSG", action_label=None, message="gap"),
+        RunResult(run_id=None, status="data_quality_error", ticker="WORKERMSG", action_label=None, message="gap"),
+    ]
     try:
-        with patch("ops.worker.run_analysis", return_value=ok), \
-             patch("ops.alerting.send_telegram", return_value=True) as tg, \
-             patch("ops.worker.send_ops_alert") as ops_alert:
-            run_one(db_conn)
-            run_one(db_conn)
+        with patch("ops.worker.run_analysis", side_effect=results), \
+             patch("ops.worker.send_ops_alert") as ops_alert, \
+             patch("ops.alerting.send_telegram") as tg:
+            for _ in results:
+                run_one(db_conn)
 
-        token, chat_id, text = tg.call_args.args
-        assert (token, chat_id) == ("alice-token", "111")
-        assert "nhãn: hold" in text  # alice holds it: the shared "watch" becomes her "hold"
-        ops_alert.assert_called_once()  # unregistered requester: legacy fallback to the ops chat
-        assert "nhãn: watch" in ops_alert.call_args.args[0]
+        ops_alert.assert_called_once_with("[WORKERMSG] data_quality_error: gap")  # the scheduled one only
+        tg.assert_not_called()
     finally:
-        db_conn.execute("DELETE FROM jobs WHERE ticker = 'WORKERUSR'")
-        db_conn.execute("DELETE FROM positions WHERE ticker = 'WORKERUSR'")
-        db_conn.execute("DELETE FROM users WHERE user_id = 'alice'")
-        db_conn.execute("DELETE FROM runs WHERE run_id = 'worker-usr-run'")
-        db_conn.execute("DELETE FROM tickers WHERE ticker = 'WORKERUSR'")
+        db_conn.execute("DELETE FROM jobs WHERE ticker = 'WORKERMSG'")
+        db_conn.execute("DELETE FROM tickers WHERE ticker = 'WORKERMSG'")
         db_conn.commit()

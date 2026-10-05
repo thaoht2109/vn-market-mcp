@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Remove a user added by ops/add_user.sh and revoke everything tied to them, without restarting
-# the gateway or the worker (the multiplexer unserves the deleted profile and stops only its bot):
+# the gateway (the multiplexer unserves the deleted profile and stops only its bot):
 #   - Hermes: the profile (own bot token, memory, sessions, config); leftovers of the old shared-bot
 #     setup (profile_routes, ids in default's allowlists that no other route uses) are removed from
 #     the files and dropped by the gateway at its next restart — until then they point to an unserved
 #     profile, which Hermes rejects
-#   - the worker's copy of the bot token (secrets/users.env)
-#   - Postgres: their watchlist (watchlist_extra), positions and users row
+#   - Postgres: their watchlist (watchlist_extra) and positions
 # Before deleting: Hermes config + a profile archive go to ~/.hermes/backups/remove_user-<stamp>/,
 # the DB rows to ./backups/remove_user-<tên>-<stamp>/*.csv. Shared data (runs, predictions,
 # market data) and job history are kept.
@@ -114,9 +113,8 @@ COUNTS="(không rõ user id)"
 if [[ -n "$TG_ID" ]]; then
   COUNTS=$(psql_admin -tA -F' ' -c "SELECT
       (SELECT count(*) FROM watchlist_extra WHERE added_by = '$TG_ID'),
-      (SELECT count(*) FROM positions WHERE declared_by = '$TG_ID'),
-      (SELECT count(*) FROM users WHERE user_id = '$TG_ID')" \
-    | awk '{print $1 " mã theo dõi, " $2 " vị thế, " $3 " dòng users"}')
+      (SELECT count(*) FROM positions WHERE declared_by = '$TG_ID')" \
+    | awk '{print $1 " mã theo dõi, " $2 " vị thế"}')
 fi
 cat <<EOF
 Sẽ xóa người dùng '$NAME' (telegram user id: ${TG_ID:-?}):
@@ -140,7 +138,7 @@ fi
 DB_BACKUP="backups/remove_user-$NAME-$STAMP"
 if [[ -n "$TG_ID" ]]; then
   mkdir -p "$DB_BACKUP"
-  for q in "watchlist_extra:added_by" "positions:declared_by" "users:user_id"; do
+  for q in "watchlist_extra:added_by" "positions:declared_by"; do
     psql_admin -c "COPY (SELECT * FROM ${q%%:*} WHERE ${q##*:} = '$TG_ID') TO STDOUT WITH CSV HEADER" > "$DB_BACKUP/${q%%:*}.csv"
   done
 fi
@@ -153,7 +151,6 @@ if [[ -n "$TG_ID" ]]; then
   psql_admin -q -c "BEGIN;
     DELETE FROM watchlist_extra WHERE added_by = '$TG_ID';
     DELETE FROM positions WHERE declared_by = '$TG_ID';
-    DELETE FROM users WHERE user_id = '$TG_ID';
     COMMIT;"
 fi
 
@@ -174,14 +171,9 @@ if served is not None and os.environ["NAME"] in served:
     raise SystemExit(f"gateway vẫn phục vụ profile {os.environ['NAME']}: {answer}")
 print(f"   gateway đang phục vụ: {served if served is not None else '(không trả lời; tự quét lại trong 30 giây)'}")
 PY
-if [[ -f secrets/users.env ]]; then
-  TOKEN_ENV="TELEGRAM_BOT_TOKEN_${NAME^^}"
-  grep -v "^$TOKEN_ENV=" secrets/users.env > secrets/users.env.tmp || true
-  cat secrets/users.env.tmp > secrets/users.env && rm secrets/users.env.tmp
-fi
 
 echo
-echo "Xong, không restart gateway hay worker. Bot riêng của '$NAME' đã ngừng; tin nhắn của họ trong nhóm chung vẫn vào profile default."
+echo "Xong, không restart gateway. Bot riêng của '$NAME' đã ngừng; tin nhắn của họ trong nhóm chung vẫn vào profile default."
 echo "Nên thu hồi token của bot đó ở @BotFather (/revoke hoặc /deletebot)."
 echo "Sao lưu Hermes (cấu hình + profile): ~/.hermes/backups/remove_user-$STAMP/"
 [[ -n "$TG_ID" ]] && echo "Sao lưu dữ liệu DB: $DB_BACKUP/"

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Add (or update) one user with their OWN Telegram bot. No gateway or worker restart: the Hermes
+# Add (or update) one user with their OWN Telegram bot, without restarting the gateway: the Hermes
 # multiplexer hot-serves a new/changed profile and starts only that profile's bot (other users'
-# bots are never touched), and the worker reads secrets/users.env on every send.
+# bots are never touched). Only Hermes knows the token; the worker never messages users.
 #   - Hermes profile <tên>: VNMCP_USER_ID pinned, shared skill dir, the bot token and an allowlist
 #     of just this user in the profile's .env
-#   - secrets/users.env + users row: where the worker sends this user's results
 #   - leftovers of the old shared-bot setup (<tên>-dm/-group routes, ids in default's allowlists)
 #     are removed from the files; the running gateway drops them at its next restart
 # Idempotent: re-running with the same args changes nothing; with new args it updates.
@@ -13,25 +12,21 @@
 #   <tên>              profile name, lowercase letters/digits (e.g. lan)
 #   <telegram_user_id> numeric Telegram user id of the owner
 #   <bot_token>        token of a bot created for this user with @BotFather
-#   [group_id]         optional private group (the user + their bot), e.g. -1001234567890;
-#                      results are then delivered to that group instead of the private chat
+#   [group_id]         optional private group (the user + their bot) the bot also answers in
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 HERMES="${HERMES_CONTAINER:-hermes-gateway}"
-export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-vn-market-mcp}"  # same stack when run from a git worktree
 NAME="${1:-}"; TG_ID="${2:-}"; BOT_TOKEN="${3:-}"; GROUP_ID="${4:-}"
 if [[ ! "$NAME" =~ ^[a-z0-9]+$ || "$NAME" == "default" || ! "$TG_ID" =~ ^[0-9]+$ \
       || ! "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ || ( -n "$GROUP_ID" && ! "$GROUP_ID" =~ ^-[0-9]+$ ) ]]; then
   echo "usage: $0 <tên: a-z0-9, không phải default> <telegram_user_id: số> <bot_token từ @BotFather> [group_id: số âm]" >&2
   exit 2
 fi
-CHAT_ID="${GROUP_ID:-$TG_ID}"
-TOKEN_ENV="TELEGRAM_BOT_TOKEN_${NAME^^}"
 STAMP=$(date +%Y%m%d-%H%M%S)
 START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
 
-echo "1/5 kiểm tra bot token"
+echo "1/4 kiểm tra bot token"
 docker exec -i -e NAME="$NAME" -e BOT_TOKEN="$BOT_TOKEN" -e SKIP_GETME="${ADD_USER_SKIP_GETME:-0}" -w /opt/hermes "$HERMES" /opt/hermes/.venv/bin/python - <<'PY'
 import json
 import os
@@ -55,7 +50,7 @@ except Exception as exc:
 print(f"   bot @{me['username']} (id {me['id']})")
 PY
 
-echo "2/5 profile $NAME"
+echo "2/4 profile $NAME"
 NEW_PROFILE=0
 if ! docker exec "$HERMES" test -d "/opt/data/profiles/$NAME"; then
   docker exec -u hermes "$HERMES" hermes profile create "$NAME" --clone --no-alias --description "vn-market cá nhân: $NAME" >/dev/null
@@ -63,7 +58,7 @@ if ! docker exec "$HERMES" test -d "/opt/data/profiles/$NAME"; then
 fi
 docker exec -u hermes "$HERMES" sh -c "mkdir -p /opt/data/backups/add_user-$STAMP && cp /opt/data/config.yaml /opt/data/.env /opt/data/backups/add_user-$STAMP/ && cp /opt/data/profiles/$NAME/config.yaml /opt/data/backups/add_user-$STAMP/config.$NAME.yaml && cp /opt/data/profiles/$NAME/.env /opt/data/backups/add_user-$STAMP/env.$NAME"
 
-echo "3/5 cấu hình profile (VNMCP_USER_ID, skill chung, bot riêng, chỉ chủ bot được chat)"
+echo "3/4 cấu hình profile (VNMCP_USER_ID, skill chung, bot riêng, chỉ chủ bot được chat)"
 docker exec -i -u hermes -e NAME="$NAME" -e TG_ID="$TG_ID" -e GROUP_ID="$GROUP_ID" -e BOT_TOKEN="$BOT_TOKEN" \
   -e NEW_PROFILE="$NEW_PROFILE" -w /opt/hermes "$HERMES" /opt/hermes/.venv/bin/python - <<'PY'
 import os
@@ -119,22 +114,7 @@ if new != env:  # an unchanged file keeps its signature: no needless reconnect o
 print("   profile ok")
 PY
 
-echo "4/5 nơi nhận kết quả (secrets/users.env, bảng users → chat $CHAT_ID)"
-mkdir -p secrets && chmod 700 secrets
-touch secrets/users.env && chmod 600 secrets/users.env
-python3 - "$TOKEN_ENV" "$BOT_TOKEN" secrets/users.env <<'PY'
-import sys
-from pathlib import Path
-
-key, value, path = sys.argv[1], sys.argv[2], Path(sys.argv[3])
-lines = [l for l in path.read_text().splitlines() if not l.startswith(f"{key}=")]
-path.write_text("\n".join(lines + [f"{key}={value}"]) + "\n")
-PY
-docker compose exec -T postgres psql -U vnmcp_admin -p 5433 vnmcp -v ON_ERROR_STOP=1 -q -c \
-  "INSERT INTO users (user_id, chat_id, bot_token_env) VALUES ('$TG_ID', '$CHAT_ID', '$TOKEN_ENV')
-   ON CONFLICT (user_id) DO UPDATE SET chat_id = EXCLUDED.chat_id, bot_token_env = EXCLUDED.bot_token_env" </dev/null
-
-echo "5/5 dọn cấu hình bot chung cũ (nếu có) và bật bot riêng (không restart)"
+echo "4/4 dọn cấu hình bot chung cũ (nếu có) và bật bot riêng (không restart)"
 docker exec -i -u hermes -e NAME="$NAME" -e TG_ID="$TG_ID" -w /opt/hermes "$HERMES" /opt/hermes/.venv/bin/python - <<'PY'
 import os
 import re
@@ -203,7 +183,7 @@ fi
 docker exec "$HERMES" hermes -p "$NAME" mcp test vn-market-mcp 2>&1 | grep -E "Connected|Tools discovered|rror" || true
 
 echo
-echo "Xong, không restart gateway hay worker. Sao lưu cấu hình cũ: ~/.hermes/backups/add_user-$STAMP/"
+echo "Xong, không restart gateway. Sao lưu cấu hình cũ: ~/.hermes/backups/add_user-$STAMP/"
 echo "Người dùng nhắn /start cho bot riêng của mình rồi nhắn thử một câu hỏi."
 if [[ -n "$GROUP_ID" ]]; then
   echo "Nhóm riêng: thêm bot vào nhóm $GROUP_ID; trong nhóm phải @bot hoặc dùng lệnh /... (require_mention)."

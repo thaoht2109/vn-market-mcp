@@ -38,10 +38,6 @@ services:
     # each saw their own private, unshared filesystem for "snapshots/".
     volumes:
       - ./snapshots:/app/snapshots
-      # secrets/users.env: each user's own bot token (TELEGRAM_BOT_TOKEN_<NAME>=...), named by
-      # users.bot_token_env. Read on every send (ops/alerting.py), so ops/add_user.sh needs no
-      # worker restart. A directory, not the file: a missing file would be created as a directory.
-      - ./secrets:/app/secrets:ro
     environment:
       PIPELINE_RW_DATABASE_URL: postgresql://pipeline_rw:${PIPELINE_RW_PASSWORD:?}@postgres:5433/vnmcp
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}

@@ -95,7 +95,8 @@ def watch_ticker(ticker: str) -> dict[str, Any]:
     """Thêm một mã (kể cả ngoài VN30) vào danh sách theo dõi của người đang chat.
 
     Mã theo dõi được phân tích tự động cùng VN30 mỗi phiên; lần thêm xếp hàng một lần
-    phân tích ngay (data.job_id). status="not_found" nếu mã không niêm yết."""
+    phân tích ngay (data.job_id): chờ nó bằng get_job_status như với run_analysis rồi báo kết quả
+    đầu tiên — không có tin nhắn nào khác báo khi job xong. status="not_found" nếu mã không niêm yết."""
     return watch_ticker_tool(ticker)
 
 

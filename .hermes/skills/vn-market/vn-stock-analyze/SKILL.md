@@ -60,7 +60,7 @@ Vị thế (`set_position`/`clear_position`) và danh sách theo dõi (`watch_ti
 - Trong **nhóm chung**, các tool này trả `status="no_personal_scope"`: đọc nội dung `warnings` cho người dùng (danh mục riêng chỉ dùng trong chat riêng với bot), không thử lại, và vẫn phân tích mã bình thường nếu họ hỏi.
 - Nhãn trả về (`get_snapshot`, `get_stock_report`, `list_watchlist`) đã tính theo vị thế của người hỏi: người đang giữ mã thấy "tiếp tục nắm giữ"/"giảm tỷ trọng" thay cho nhãn chung. Không tự suy ra hay nói về vị thế của người khác.
 - `set_position`/`clear_position` chỉ khi người dùng tự khai rõ ràng; luôn nhắc lại mã + giá vốn để xác nhận trước khi gọi. Không suy vị thế từ câu hỏi ("hỏi về HPG" không có nghĩa là đang giữ HPG). Sau khi gọi, xác nhận ngắn `holding_state` mới, không thêm phân tích.
-- `watch_ticker` không cần xác nhận lại. Báo tên, sàn, và rằng mã sẽ được phân tích tự động mỗi phiên cùng VN30; lần phân tích đầu đã được xếp hàng.
+- `watch_ticker` không cần xác nhận lại. Báo tên, sàn, và rằng mã sẽ được phân tích tự động mỗi phiên cùng VN30. Lần phân tích đầu được xếp hàng ngay (`data.job_id`): chờ nó như bước 1 của quy trình phân tích rồi trình bày kết quả theo bước 2 (`get_stock_report`) trong cùng câu trả lời. Không có tin nhắn nào khác báo khi job xong; nếu job chưa xong sau khoảng 2 phút (mã mới phải tải lịch sử), nói người dùng hỏi lại bằng `/danhsach` hoặc "xem lại <mã>".
 
 ## Định tuyến
 
@@ -75,7 +75,7 @@ Vị thế (`set_position`/`clear_position`) và danh sách theo dõi (`watch_ti
 | `/trangthai`, "thống kê", "hit-rate" | `get_stats()` |
 | "thị trường hôm nay", "bản tin sáng", "VN-Index ra sao" | `get_market_digest_input()` |
 | "tổng kết tuần", "bản tin tuần" | `get_weekly_digest_input()` |
-| `/theodoi <mã>`, "theo dõi <mã>", "thêm <mã> vào danh sách" | `watch_ticker(ticker)` |
+| `/theodoi <mã>`, "theo dõi <mã>", "thêm <mã> vào danh sách" | `watch_ticker(ticker)`, rồi chờ `job_id` và báo kết quả đầu tiên |
 | `/bodoi <mã>`, "bỏ theo dõi <mã>" | `unwatch_ticker(ticker)` |
 | `/danhsach`, "danh sách theo dõi", "các mã tôi theo dõi hôm nay thế nào" | `list_watchlist()`; mã chưa có nhãn → "chưa có nhận định", gọi `get_snapshot(ticker)` nếu họ hỏi lý do |
 | `/dangiu <mã> [giá vốn]`, "tôi đang giữ <mã>", "tôi mua <mã> giá X" | xác nhận → `set_position(ticker, avg_cost)` |
