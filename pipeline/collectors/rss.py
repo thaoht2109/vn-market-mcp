@@ -79,7 +79,9 @@ def parse_entries(content: bytes, fetched_at: datetime) -> list[dict]:
             "title": title,
             "url": e.get("link") or None,
             "summary": re.sub(r"\s+", " ", summary).strip() or None,
-            "published_at": datetime(*stamp[:6], tzinfo=timezone.utc) if stamp else fetched_at,
+            # no date, or a date in the future (a typo, e.g. year 2062 has no partition and would sit on top of
+            # every pillar list): the fetch time is the best honest answer
+            "published_at": min(datetime(*stamp[:6], tzinfo=timezone.utc), fetched_at) if stamp else fetched_at,
         })
     return items
 
@@ -93,12 +95,14 @@ def _recent_kept(conn, published_at: datetime, exclude_hash: str) -> list[tuple[
 
 
 def collect_source(conn, client, source: dict, *, vn30: set[str], aliases, keywords, now: datetime):
-    """Returns (stored, newest_published_at). Raises on any source-level failure."""
+    """Returns (stored, newest_published_at_of_new_items, cache_entry). Raises on any source-level failure.
+    The caller remembers `cache_entry` (ETag/Last-Modified) only after the items were committed: a remembered
+    ETag whose items failed to store would turn the retry into a 304 and lose them."""
     resp = _get(client, source["url"])
     if resp.status_code == 304:
-        return 0, None
+        return 0, None, None
     entries = parse_entries(resp.content, now)
-    _cache[source["url"]] = {"etag": resp.headers.get("etag"), "modified": resp.headers.get("last-modified")}
+    cache_entry = {"etag": resp.headers.get("etag"), "modified": resp.headers.get("last-modified")}
     stored, newest = 0, None
     for it in entries:
         h = item_hash(it["url"], it["title"], it["published_at"])
@@ -108,14 +112,15 @@ def collect_source(conn, client, source: dict, *, vn30: set[str], aliases, keywo
             dup = is_duplicate_title(it["title"], _recent_kept(conn, it["published_at"], h))
             if dup:
                 status, reason = "dropped", f"duplicate_title:{dup}"
-        stored += store_news_item(
+        inserted = store_news_item(
             conn, source=source["name"], url=it["url"], title=it["title"], summary=it["summary"],
             published_at=it["published_at"], fetched_at=now, tickers=res.tickers, pillars=res.pillars,
             stream=source["stream"], filter_status=status, filter_reason=reason,
         )
-        seen = min(it["published_at"], now)  # a future pubDate must not hide a dead feed
-        newest = seen if newest is None else max(newest, seen)
-    return stored, newest
+        if inserted:  # only NEW items prove the feed is alive: a frozen feed re-lists the same (or undated) ones
+            stored += 1
+            newest = it["published_at"] if newest is None else max(newest, it["published_at"])
+    return stored, newest, cache_entry
 
 
 def _due(conn, source: dict, now: datetime) -> bool:
@@ -137,10 +142,12 @@ def run_collect_rss(conn, *, vn30: list[str], send, client: httpx.Client | None 
                 continue
             try:
                 with conn.transaction():
-                    stored, newest = collect_source(conn, client, source, vn30=vn30_set, aliases=aliases,
-                                                    keywords=keywords, now=now)
+                    stored, newest, cache_entry = collect_source(conn, client, source, vn30=vn30_set,
+                                                                 aliases=aliases, keywords=keywords, now=now)
                 record_ok(conn, source["name"], newest, now)
                 conn.commit()
+                if cache_entry:
+                    _cache[source["url"]] = cache_entry
                 summary["ok"] += 1
                 summary["stored"] += stored
             except Exception as exc:  # one bad source must not stop the others

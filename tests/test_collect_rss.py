@@ -149,3 +149,34 @@ def test_a_silent_source_alerts_once_across_runs(db_conn, monkeypatch):
     run(db_conn, monkeypatch, srcs(("test_cafef", "A", URL_A)), c, alerts=alerts)
     run(db_conn, monkeypatch, srcs(("test_cafef", "A", URL_A)), c, now=NOW + timedelta(minutes=61), alerts=alerts)
     assert len([a for a in alerts if "test_cafef" in a]) == 1
+
+
+def test_a_frozen_feed_with_undated_items_does_not_look_fresh(db_conn, monkeypatch):
+    c, _ = mock_client({URL_A: feed("cafef_vi_mo.xml")})  # a4 has no pubDate: its time is "now" on every poll
+    run(db_conn, monkeypatch, srcs(("test_cafef", "A", URL_A)), c)
+    run(db_conn, monkeypatch, srcs(("test_cafef", "A", URL_A)), c, now=NOW + timedelta(minutes=61))  # nothing new
+    last_item = db_conn.execute("SELECT last_item_at FROM source_health WHERE source = 'test_cafef'").fetchone()[0]
+    assert last_item == NOW  # only items that were actually new may advance last_item_at
+
+
+def test_a_future_pubdate_is_stored_as_fetch_time_and_never_breaks_the_source(db_conn, monkeypatch):
+    far = ('<?xml version="1.0"?><rss version="2.0"><channel><title>t</title><link>http://x</link>'
+           '<description>d</description><item><title>Chính sách thuế mới</title><link>http://cafef.test/far</link>'
+           '<pubDate>Mon, 01 Jan 2062 00:00:00 GMT</pubDate></item></channel></rss>').encode()
+    c, _ = mock_client({URL_A: httpx.Response(200, content=far, headers={"content-type": "application/rss+xml"})})
+    assert run(db_conn, monkeypatch, srcs(("test_cafef", "A", URL_A)), c) == {"ok": 1, "failed": 0, "stored": 1}
+    got = db_conn.execute("SELECT published_at FROM news_items WHERE url = 'http://cafef.test/far'").fetchone()[0]
+    assert got == NOW  # not 2062: no partition for that, and it would sit on top of every pillar list
+
+
+def test_the_etag_is_only_remembered_after_the_items_were_stored(db_conn, monkeypatch):
+    c, _ = mock_client({URL_A: feed("cafef_vi_mo.xml")})
+    real_store = rss.store_news_item
+
+    def broken(*a, **k):
+        raise RuntimeError("db hiccup")
+    monkeypatch.setattr(rss, "store_news_item", broken)
+    assert run(db_conn, monkeypatch, srcs(("test_cafef", "A", URL_A)), c)["failed"] == 1
+    assert URL_A not in rss._cache  # a remembered ETag would turn the retry into a 304 and lose these items
+    monkeypatch.setattr(rss, "store_news_item", real_store)
+    assert run(db_conn, monkeypatch, srcs(("test_cafef", "A", URL_A)), c, now=NOW + timedelta(minutes=61))["stored"] == 5
