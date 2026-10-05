@@ -97,7 +97,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `db/` | Migrations (`001`–`016`), tạo role, tạo DB test |
 | `llm/`, `schemas/` | Các vai trò LLM trong pipeline (đang **tắt**, giữ lại để bật sau) |
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
-| `.hermes/skills/vn-market/vn-stock-analyze/` | Skill định tuyến câu hỏi chat sang các tool MCP |
+| `.hermes/skills/vn-market/vn-stock-analyze/` | Skill duy nhất cho phân tích cổ phiếu VN: định tuyến câu hỏi sang tool MCP, giọng văn, quy trình báo cáo. Dùng chung, chỉ đọc cho mọi profile |
 | `config/` | `vn-rules.yaml` (ngưỡng nghiệp vụ), `models.yaml` (mô hình LLM) |
 | `users.env` | Tùy chọn: token của bot riêng (nếu có người không dùng bot chung). Không commit (đã có trong `.gitignore`) |
 
@@ -295,7 +295,7 @@ Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trư
   ```
 
 - Stdout của MCP stdio chỉ được chứa JSON-RPC. Mọi log đi qua stderr (`ops/alerting.py`).
-- Skill `vn-stock-analyze` chỉ được nạp khi thư mục có tổ tiên `.git`. File gitlink `vn-market-mcp/.git` (nội dung `gitdir: ../../.git`) đảm nhiệm việc này. File này **không được Git theo dõi**, nên khi clone mới phải tạo lại bằng tay, và **đừng xóa**. Nạp skill bằng: `hermes skills trust /opt/vn-market-mcp`.
+- Skill `vn-stock-analyze` được nạp qua `skills.external_dirs: [/opt/vn-market-mcp/.hermes/skills]` trong `config.yaml` của **mọi** profile. Xem mục "Skill dùng chung, góc nhìn riêng" bên dưới.
 
 ### Nhiều người dùng, dữ liệu tách riêng
 
@@ -340,7 +340,7 @@ Thêm một người dùng:
    docker exec hermes-gateway hermes profile create alice --clone --no-alias
    ```
 
-   `--clone` sao chép cấu hình, skill **và cả bộ nhớ** của `default`. Mở `~/.hermes/profiles/alice/memories/USER.md` và xóa ghi chú về người khác. Profile không cần bot token riêng.
+   `--clone` sao chép cấu hình (gồm `skills.external_dirs`, nên skill chung có sẵn), skill **và cả bộ nhớ** của `default`. Mở `~/.hermes/profiles/alice/memories/USER.md` và xóa ghi chú về người khác. Profile không cần bot token riêng. Kiểm tra `docker exec hermes-gateway hermes -p alice skills list` chỉ có một skill `vn-…` là `vn-stock-analyze`.
 2. Trong `~/.hermes/profiles/alice/config.yaml`, mục `mcp_servers.vn-market-mcp.env`, thêm `VNMCP_USER_ID: '<telegram user id của alice>'`.
 3. Trong `~/.hermes/config.yaml` (profile `default`), thêm luật `alice-dm` như trên vào `gateway.profile_routes`. Trong `~/.hermes/.env`, thêm user id của alice vào `TELEGRAM_ALLOWED_USERS` (danh sách cách nhau bởi dấu phẩy) để bot chung nhận tin nhắn riêng của alice. Nếu dùng nhóm riêng, thêm cả luật `alice-group` và thêm id nhóm vào `TELEGRAM_GROUP_ALLOWED_CHATS`.
 4. Đăng ký nơi nhận kết quả (chat riêng với bot chung):
@@ -365,6 +365,22 @@ Hai profile khai báo cùng tên server `vn-market-mcp` nhưng khác `env` (khá
 Bỏ một người dùng: xóa luật trong `profile_routes`, xóa user id khỏi `TELEGRAM_ALLOWED_USERS`, xóa dòng của họ trong `users` (cần quyền admin), rồi `docker exec hermes-gateway hermes profile delete <tên>`.
 
 Vẫn có thể cho một người dùng bot riêng thay cho bot chung: đặt `TELEGRAM_BOT_TOKEN` trong `.env` của profile đó, ghi token cho worker vào `users.env` (cạnh `docker-compose.yml`, không commit) dưới tên `TELEGRAM_BOT_TOKEN_<TÊN>`, và đặt `users.bot_token_env` bằng tên đó.
+
+### Skill dùng chung, góc nhìn riêng
+
+Mỗi người dùng có lập luận và góc nhìn thị trường khác nhau, nhưng luật phân tích phải như nhau cho mọi người. Hai phần này được tách ra:
+
+| Lớp | Nằm ở | Ai sửa | Nội dung |
+|---|---|---|---|
+| Luật chung | Skill `vn-stock-analyze` trong repo, nạp qua `skills.external_dirs` | Chỉ người vận hành, qua git | Gọi tool nào cho câu hỏi nào; không tự tính số; không nâng nhãn; giọng văn; quy trình báo cáo và "Nhận định"; xử lý `no_personal_scope` |
+| Góc nhìn cá nhân | Bộ nhớ của profile (`memories/USER.md`) | Hermes, khi người dùng nêu sở thích hoặc quan điểm | Khung thời gian, khẩu vị rủi ro, ngành quan tâm, quan điểm thị trường, cách trình bày |
+
+- **Skill chung không bị sửa theo từng người.** Hermes coi skill trong `external_dirs` là chỉ đọc: bộ dọn skill hằng tuần (`curator`) và cơ chế tự sửa skill sau mỗi cuộc chat đều bỏ qua nó. Thư mục repo còn được mount chỉ đọc vào container, nên không có cách nào ghi vào. Bản thân skill cũng yêu cầu Hermes không sửa nó và không tạo skill thay thế.
+- **Góc nhìn cá nhân chỉ đổi cách trình bày, không đổi kết luận.** Nhãn, con số và ngưỡng cắt lỗ đến từ code; `save_commentary` còn từ chối "Nhận định" lạc quan hơn nhãn. Khi quan điểm của người dùng trái với hệ thống, Hermes phải nói rõ là trái và chỉ ra dữ kiện ủng hộ hoặc bác bỏ.
+- **Sửa luật chung:** sửa `SKILL.md` trong repo, merge vào `main` (gateway mount thư mục repo này), rồi `docker restart hermes-gateway`. Mọi profile nhận cùng một bản.
+- **Điều Hermes học được về hệ thống** (một lỗi dữ liệu, một hành vi lạ của tool) được ghi vào bộ nhớ của profile phát hiện ra. Người vận hành quyết định có đưa vào skill chung hay không.
+
+Trước đây Hermes dùng hai skill do chính nó viết (`research/vn-market-mcp-analysis`, `research/vn-stock-analysis`), mỗi profile một bản sao và tự sửa riêng. Nội dung hữu ích của chúng đã được gộp vào `vn-stock-analyze`; bản gốc được chuyển vào `~/.hermes/backups/skills-retired-<thời điểm>/`.
 
 Có thể kiểm thử không cần Hermes bằng MCP Inspector: `npx @modelcontextprotocol/inspector python -m mcp_server.server`.
 
@@ -430,6 +446,7 @@ Cần client `pg_dump` phiên bản 16. Nếu host khác phiên bản, chạy tr
 - Danh mục riêng chỉ dùng được trong chat riêng (hoặc nhóm riêng đã có luật). Trong nhóm chung, mọi người chỉ phân tích mã, với nhãn chung.
 - Trong nhóm riêng có luật, câu trả lời vẫn hiển thị cho mọi thành viên nhóm; định tuyến chỉ ngăn người khác thao tác danh mục, không ngăn họ đọc tin trong nhóm.
 - Một bot chung là một điểm lỗi chung: lộ token hoặc bot bị chặn thì ảnh hưởng mọi người dùng.
+- Hermes vẫn có thể tự tạo skill mới (khác tên) từ các cuộc chat. Skill chung yêu cầu không làm vậy cho phân tích cổ phiếu VN, nhưng đó là hướng dẫn, không phải rào chắn. Thỉnh thoảng kiểm tra `hermes -p <tên> skills list` và xóa skill `vn-…` lạ.
 - Không giới hạn số mã mỗi người theo dõi. Mỗi mã thêm vào làm tăng số lần gọi vnstock ở mỗi mốc theo lịch (giới hạn 60 lần/phút).
 - "Nhận định" đã lưu (`report_commentary`) dùng chung theo mã. Người đang giữ và người không giữ thấy nhãn khác nhau nên dấu vân tay số liệu khác nhau, và nhận định sẽ bị viết lại khi hai nhóm luân phiên hỏi cùng một mã.
 - Khi lấp khoảng trống giá cho mã lâu không phân tích, nếu khoảng trống chứa ngày GDKHQ thì phần lịch sử cũ vẫn theo mức giá chưa điều chỉnh cho tới khi close_sync phát hiện và tải lại.
