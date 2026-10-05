@@ -157,6 +157,11 @@ def render_stock_report(snapshot: dict, *, ticker: str, name: str | None, as_of:
     out.append(f"**Kết luận:** {stance} — {reason}. Độ tin cậy {conf_txt} ({_n(conf, 2)}){cov}"
                + (f"; điểm tổng hợp {_n(score, 1)}/100." if score is not None else "."))
 
+    sess = s.get("session") or {}
+    if sess.get("provisional") and sess.get("live_label") != label:
+        out.append(f"_Tín hiệu trong phiên: {_STANCE.get(sess['live_label'], sess['live_label'])}. "
+                   "Nhãn trên là nhãn chính thức, chờ giá đóng cửa xác nhận trước khi nâng._")
+
     def block(title: str, lines: list[str]) -> None:
         if lines:
             out.append(f"**{title}**\n" + "\n".join("- " + l for l in lines))

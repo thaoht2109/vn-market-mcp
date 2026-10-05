@@ -56,6 +56,14 @@ def is_trading_day(conn: psycopg.Connection, d: date) -> bool:
 _FIRST_BAR_TIME = time(9, 15)
 
 
+def is_provisional_session(trading_date: date, now: datetime, close: str = "15:00") -> bool:
+    """True while `trading_date` is today's session and it has not closed yet: its bar is a
+    live snapshot, not a closing price. Before 09:15 trading_date is the PREVIOUS session
+    (see latest_trading_day), so this is False and that day's closed bar is used."""
+    now_vn = now.astimezone(_VN_TZ)
+    return trading_date == now_vn.date() and now_vn.time() < time.fromisoformat(close)
+
+
 def latest_trading_day(conn: psycopg.Connection, as_of: datetime) -> date:
     """Latest trading day that already has a bar as of `as_of` (VN time)."""
     now_vn = as_of.astimezone(_VN_TZ)

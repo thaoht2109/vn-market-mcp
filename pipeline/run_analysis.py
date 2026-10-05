@@ -18,8 +18,8 @@ from llm.synthesis import SynthesisValidationError, run_synthesis_daily
 from llm.client import LLMCallError
 from llm.verifier_logic import VerifierPrecheckError, run_verifier_logic
 from ops.alerting import log_event
-from pipeline.action_label import ActionLabelConfig, ActionLabelInput, action_label
-from pipeline.calendar import calendar_covers, latest_trading_day
+from pipeline.action_label import ActionLabelConfig, ActionLabelInput, action_label, provisional_label
+from pipeline.calendar import calendar_covers, is_provisional_session, latest_trading_day
 from pipeline.coverage import (
     CoverageConfig,
     UnknownTickerError,
@@ -352,6 +352,28 @@ def run_analysis(
     )
     label = action_label(label_input, label_cfg)
 
+    # Mid-session the bar is live, not a closing price: show/store only what is safe (see
+    # provisional_label); the official label and its prediction are set after the close.
+    provisional = is_provisional_session(trading_date, now, rules["trading_hours"]["afternoon_end"])
+    persist_prediction = True
+    if provisional:
+        existing = _existing_open_prediction(conn, ticker)
+        official = existing[1] if existing else None
+        stop_row = conn.execute("SELECT stop_loss FROM predictions WHERE id = %s", (existing[0],)).fetchone() if existing else None
+        stop = float(stop_row[0]) if stop_row and stop_row[0] is not None else None
+        prev_close = float(df.iloc[-2]["close"]) if len(df) >= 2 else None
+        stop_breached = stop is not None and today_close <= stop
+        big_move = prev_close is not None and abs(today_close - prev_close) > 2 * tech.atr14
+        live_label = label
+        label, persist_prediction = provisional_label(live_label, official, stop_breached or big_move)
+        snapshot["session"] = {"provisional": True, "live_label": live_label, "official_label": official}
+        if persist_prediction:
+            warnings.append(
+                f"Hạ nhãn trong phiên xuống {label}: " + ("giá thủng mức cắt lỗ" if stop_breached else "biến động vượt 2 lần ATR")
+            )
+        elif live_label != label:
+            warnings.append(f"Tín hiệu trong phiên là {live_label}; nhãn chính thức giữ {label}, chờ giá đóng cửa xác nhận")
+
     snapshot["market"] = market
     snapshot["technical"] = tech
     snapshot["fundamental"] = fund
@@ -375,13 +397,13 @@ def run_analysis(
         (run_id, mode, [ticker], style, depth, now, snapshot_ref, json.dumps(warnings)),
     )
 
-    # Twice a day is enough for headlines (pre = overnight, post = the session); weekly runs minutes after post.
-    if mode in ("scheduled_pre", "scheduled_post"):
+    # Once a day is enough for headlines (post = the session); weekly runs minutes after post.
+    if mode == "scheduled_post":
         ingest_news(conn, provider, ticker, trading_date - timedelta(days=7), trading_date)
 
     # LLM roles (spec §5.7.3) run for the post-session cron report and the
     # weekly deep-dive (spec §4.2, synthesis_full role) — on_demand/
-    # scheduled_pre stay fast and free of LLM cost/latency. A
+    # intraday stay fast and free of LLM cost/latency. A
     # failed call for any one role just means the report ships without that
     # extra narrative, never blocks the deterministic pipeline (spec §9
     # "nhãn hành động do code sinh").
@@ -454,11 +476,14 @@ def run_analysis(
         write_snapshot(snapshot_dir, run_id, snapshot)
         conn.execute("UPDATE runs SET warnings = %s WHERE run_id = %s", (json.dumps(warnings), run_id))
 
-    _prediction_id, trigger = _upsert_prediction(
-        conn, run_id, ticker, label, coverage_result.tier, holding_state,
-        snapshot["coverage"], plan.entry_zone, plan.stop_loss, plan.target, conf,
-        rules["predictions"]["refresh_horizon_days"],
-    )
+    if persist_prediction:
+        _prediction_id, trigger = _upsert_prediction(
+            conn, run_id, ticker, label, coverage_result.tier, holding_state,
+            snapshot["coverage"], plan.entry_zone, plan.stop_loss, plan.target, conf,
+            rules["predictions"]["refresh_horizon_days"],
+        )
+    else:
+        trigger = "provisional"
 
     report_text = render_synthesis_report(snapshot) if mode in ("scheduled_post", "scheduled_weekly") else None
     return RunResult(

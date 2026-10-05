@@ -16,6 +16,13 @@ from providers.vnstock_provider import ForeignFlowRecord, FundamentalRecord, Pri
 from tests.conftest import insert_ticker
 
 
+@pytest.fixture(autouse=True)
+def _after_the_close(monkeypatch):
+    """Default: run as if the session had closed, whatever the wall clock says (tests run
+    mid-session too). In-session behaviour is tested explicitly by overriding this."""
+    monkeypatch.setattr("pipeline.run_analysis.is_provisional_session", lambda *a, **k: False)
+
+
 def _seed_env(
     db_conn, ticker="VNMTEST", exchange="HOSE", industry_group="other", history_days=520,
     calendar_lag_days=0, vn30_member=True,
@@ -381,6 +388,50 @@ def test_run_analysis_scheduled_post_applies_downgrade_recommendation(db_conn, t
         "SELECT action_label FROM predictions WHERE ticker = 'VNMTEST' AND status = 'open'"
     ).fetchone()
     assert prediction_row[0] == "stay_out"
+
+
+def _prediction_rows(db_conn, ticker):
+    return db_conn.execute(
+        "SELECT action_label FROM predictions WHERE ticker = %s ORDER BY id", (ticker,)
+    ).fetchall()
+
+
+def test_run_analysis_in_session_stores_no_prediction_and_never_shows_a_buy(db_conn, tmp_path, monkeypatch):
+    import pipeline.run_analysis as ram
+    latest_day, latest_close = _seed_env(db_conn, "VNMTEST")
+    monkeypatch.setattr(ram, "is_provisional_session", lambda *a, **k: True)
+    monkeypatch.setattr(ram, "action_label", lambda inp, cfg: "buy_accumulate")
+
+    result = run_analysis(db_conn, _StubProvider(latest_day, latest_close), "VNMTEST", tmp_path)
+
+    assert result.status == "ok" and result.action_label == "watch" and result.message == "trigger=provisional"
+    assert _prediction_rows(db_conn, "VNMTEST") == []
+    snapshot_ref = db_conn.execute("SELECT snapshot_ref FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
+    session = json.loads(Path(snapshot_ref).read_text())["session"]
+    assert session == {"provisional": True, "live_label": "buy_accumulate", "official_label": None}
+
+
+def test_run_analysis_in_session_upgrade_waits_but_stop_breach_downgrades(db_conn, tmp_path, monkeypatch):
+    import pipeline.run_analysis as ram
+    latest_day, latest_close = _seed_env(db_conn, "VNMTEST")
+    provider = _StubProvider(latest_day, latest_close)
+    monkeypatch.setattr(ram, "action_label", lambda inp, cfg: "watch")
+    run_analysis(db_conn, provider, "VNMTEST", tmp_path)  # after the close: official "watch"
+    assert _prediction_rows(db_conn, "VNMTEST") == [("watch",)]
+
+    monkeypatch.setattr(ram, "is_provisional_session", lambda *a, **k: True)
+    monkeypatch.setattr(ram, "action_label", lambda inp, cfg: "buy_accumulate")
+    up = run_analysis(db_conn, provider, "VNMTEST", tmp_path)
+    assert up.action_label == "watch" and _prediction_rows(db_conn, "VNMTEST") == [("watch",)]  # upgrade waits
+
+    monkeypatch.setattr(ram, "action_label", lambda inp, cfg: "stay_out")
+    soft = run_analysis(db_conn, provider, "VNMTEST", tmp_path)
+    assert soft.action_label == "watch"  # no trigger: noise, official kept
+
+    db_conn.execute("UPDATE predictions SET stop_loss = 1e9 WHERE ticker = 'VNMTEST'")  # price now below the stop
+    down = run_analysis(db_conn, provider, "VNMTEST", tmp_path)
+    assert down.action_label == "stay_out"
+    assert [r[0] for r in _prediction_rows(db_conn, "VNMTEST")] == ["watch", "stay_out"]
 
 
 def test_run_analysis_on_demand_never_calls_synthesis(db_conn, tmp_path):

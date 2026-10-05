@@ -127,3 +127,20 @@ sau khi chọn và áp dụng hướng sửa ở trên.
 - Test suite cần load `.env` trước khi chạy:
   `set -a; source .env; set +a; .venv/bin/python -m pytest tests/ -q`.
   203/203 pass tính đến thời điểm bàn giao.
+
+## Lịch chạy hiện tại (cập nhật 2026-10-05; các ghi chú `scheduled_pre` ở trên là lịch cũ)
+
+Nhãn chính thức của từng mã chỉ được tạo **một lần/ngày, trên giá đóng cửa đã chốt**.
+Giờ VN (UTC+7), các phiên giao dịch:
+
+| Giờ | Job | Ghi chú |
+|---|---|---|
+| 08:30 | `macro_premarket` | tin tức/vĩ mô qua đêm, không tạo dự đoán từng mã |
+| 09:15, 11:00, 13:00 | `scheduled_intraday` | cập nhật giá tạm tính; không lưu dự đoán, chỉ hạ nhãn khi thủng cắt lỗ / biến động > 2 ATR |
+| 15:05 | `close_sync` | chốt nến + khối ngoại, phát hiện vnstock điều chỉnh giá (GDKHQ) và tải lại lịch sử |
+| 15:20 | `scheduled_post` | đánh giá chính thức, tạo dự đoán |
+| 15:30 (T6) | `scheduled_weekly` | phân tích sâu theo tuần |
+| 18:00 | `close_sync_retry` | chạy lại close_sync cho phần vnstock lỗi lúc 15:05 |
+
+Quy tắc nhãn trong phiên: `pipeline/action_label.py::provisional_label`. Phân tích on-demand
+trong phiên vẫn trả kết quả mới (snapshot có khối `session`), nhưng nâng nhãn chờ giá đóng cửa.

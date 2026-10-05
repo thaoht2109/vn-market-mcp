@@ -19,7 +19,7 @@ from llm.config import ModelsConfig
 from llm.macro import MACRO_JOB_TYPE, MacroDigestValidationError, run_macro_daily
 from mcp_server.connection import get_rw_conn
 from ops.alerting import log_event, send_ops_alert
-from ops.scheduler import CLOSE_SYNC_JOB_TYPE, get_vn30_tickers
+from ops.scheduler import CLOSE_SYNC_JOB_TYPES, get_vn30_tickers
 from pipeline.ingest import sync_recent_prices
 from pipeline.jobs import claim_next, mark_done, mark_failed, reclaim_stale_running, release, requeue
 from pipeline.run_analysis import run_analysis
@@ -50,7 +50,7 @@ def _run_macro_premarket(conn) -> None:
 
     Runs here (not in ops/scheduler.py) so a slow/flaky news API stalls only
     this worker's job loop, never the scheduler's enqueue loop that also
-    gates scheduled_pre/scheduled_post/scheduled_weekly.
+    gates scheduled_post/scheduled_weekly.
     """
     provider = VNStockProvider(source="VCI")
     now = datetime.now(timezone.utc)
@@ -90,7 +90,7 @@ def run_one(conn) -> bool:
 
     log_event("worker_job_started", job_key=job.job_key, ticker=job.ticker, attempts=job.attempts)
     try:
-        if job.job_type in (MACRO_JOB_TYPE, CLOSE_SYNC_JOB_TYPE):
+        if job.job_type == MACRO_JOB_TYPE or job.job_type in CLOSE_SYNC_JOB_TYPES:
             if job.job_type == MACRO_JOB_TYPE:
                 _run_macro_premarket(conn)
             else:

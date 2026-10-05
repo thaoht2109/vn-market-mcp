@@ -72,3 +72,14 @@ def test_is_trading_hours_false_on_weekend(db_conn):
     # 2026-09-05 is a Saturday; 10:00 VN == 03:00 UTC.
     now = datetime(2026, 9, 5, 3, 0, tzinfo=timezone.utc)
     assert is_trading_hours(db_conn, now, _TRADING_HOURS) is False
+
+
+def test_is_provisional_session_only_while_todays_session_is_open():
+    from pipeline.calendar import is_provisional_session
+
+    vn = ZoneInfo("Asia/Ho_Chi_Minh")
+    mon = date(2026, 10, 5)
+    assert is_provisional_session(mon, datetime(2026, 10, 5, 10, 0, tzinfo=vn)) is True
+    assert is_provisional_session(mon, datetime(2026, 10, 5, 12, 0, tzinfo=vn)) is True   # lunch break
+    assert is_provisional_session(mon, datetime(2026, 10, 5, 15, 5, tzinfo=vn)) is False  # closed
+    assert is_provisional_session(date(2026, 10, 2), datetime(2026, 10, 5, 8, 32, tzinfo=vn)) is False  # prev close

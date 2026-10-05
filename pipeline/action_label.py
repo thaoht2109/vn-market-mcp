@@ -46,6 +46,25 @@ class ActionLabelConfig:
         )
 
 
+DEFENSIVE_LABELS = {"reduce_exit", "stay_out"}
+
+
+def provisional_label(live: str | None, official: str | None, risk_triggered: bool) -> tuple[str | None, bool]:
+    """Label to show while the session is open, and whether it may be stored as a prediction.
+
+    The official label is the one set after the close (on closing prices). Intraday we only
+    move it DOWN, and only on a real trigger (stop breached / move beyond 2 ATR): a late
+    downgrade costs the investor money, a late upgrade only a part of the move, and an
+    intraday spike is often sold back into the close. Upgrades wait for the close."""
+    if live is None:
+        return official, False
+    if risk_triggered and live in DEFENSIVE_LABELS and official is not None and official not in DEFENSIVE_LABELS:
+        return live, True
+    if official is None:  # nothing official yet: show the live view but never a buy before the close
+        return ("watch" if live == "buy_accumulate" else live), False
+    return official, False
+
+
 def action_label(inp: ActionLabelInput, cfg: ActionLabelConfig) -> str | None:
     if inp.coverage_insufficient:
         return None

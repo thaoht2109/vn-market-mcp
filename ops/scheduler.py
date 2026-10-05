@@ -25,13 +25,15 @@ from pipeline.llm_gate import llm_pipeline_enabled
 
 POLL_INTERVAL_S = 60
 
-# (job_type, trigger hour:minute UTC, depth) — times per spec §4.2 table.
+# (job_type, trigger hour:minute UTC, depth). The official per-ticker verdict is made ONCE a
+# day, on closing prices: 15:20 VN, after close_sync (15:05) has settled bars and flow. A
+# pre-open ticker run would only re-score yesterday's close (the overnight news is the macro
+# digest's job), so there is none.
 SCHEDULE = [
-    ("scheduled_pre", (1, 30), "quick"),
-    ("scheduled_post", (8, 15), "full"),
+    ("scheduled_post", (8, 20), "full"),
 ]
 
-# Macro pre-market digest (spec §4.2) — fires alongside scheduled_pre, not a
+# Macro pre-market digest (spec §4.2) — fires at 08:30 VN, not a
 # per-ticker job: it's one summary across VN30's overnight news. Enqueued
 # like any other job (ticker="MARKET", no real ticker since it's market-wide)
 # so ops/worker.py runs the slow news-fetch + LLM call, not this loop — a
@@ -42,7 +44,7 @@ MACRO_TICKER = "MARKET"
 MACRO_TRIGGER = (1, 30)
 
 # Weekly deep-dive (spec §4.2 "Phân tích sâu theo tuần") — Friday, right
-# after scheduled_post, so it reuses the week's freshest close instead of
+# after scheduled_post (15:30 VN), so it reuses the week's freshest close instead of
 # waiting out the weekend. VN30-only: §4.2 scopes this to VN30 theses.
 WEEKLY_JOB_TYPE = "scheduled_weekly"
 WEEKLY_WEEKDAY = 4  # Friday
@@ -54,15 +56,21 @@ WEEKLY_DEPTH = "full"
 # vn-rules snapshot_cache) and only a result older than that makes the MCP queue
 # a worker + vnstock call. These fixed VN-time slots (every 2 h while the market
 # is open) keep the DB well inside that window. First slot is 09:15, not 09:00:
-# the ATO auction has no matched bar until then.
+# the ATO auction has no matched bar until then. No 15:00 slot: close_sync/post own the close.
+# In-session runs are provisional: they refresh prices and levels but only downgrade labels.
 INTRADAY_JOB_TYPE = "scheduled_intraday"
-INTRADAY_SLOTS = {(9, 15), (11, 0), (13, 0), (15, 0)}
+INTRADAY_SLOTS = {(9, 15), (11, 0), (13, 0)}
 
-# After the close (15:45 VN, behind scheduled_post's 15:15 batch): overwrite
-# every bar stored mid-session with its closing OHLCV, so off-hours lookups,
-# indicators and grading read final data. One market-wide job, run by the worker.
+# After the close (15:05 VN, ahead of scheduled_post at 15:20): overwrite every bar stored
+# mid-session with its closing OHLCV, detect vendor price re-basing and settle foreign flow,
+# so the official verdict and off-hours lookups read final data. Retried at 18:00 VN for
+# whatever vnstock failed on. One market-wide job each, run by the worker.
+# ponytail: the retry re-syncs every ticker (idempotent, ~30 calls), not only the failed ones.
 CLOSE_SYNC_JOB_TYPE = "close_sync"
-CLOSE_SYNC_TRIGGER = (8, 45)
+CLOSE_SYNC_TRIGGER = (8, 5)
+CLOSE_SYNC_RETRY_JOB_TYPE = "close_sync_retry"
+CLOSE_SYNC_RETRY_TRIGGER = (11, 0)
+CLOSE_SYNC_JOB_TYPES = (CLOSE_SYNC_JOB_TYPE, CLOSE_SYNC_RETRY_JOB_TYPE)
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
@@ -158,6 +166,7 @@ def run_due_jobs(conn, now: datetime, already_fired_today: set[str]) -> None:
     _run_intraday_if_due(conn, now, already_fired_today)
     _run_macro_premarket_if_due(conn, now, already_fired_today)
     _run_market_job_if_due(conn, now, already_fired_today, CLOSE_SYNC_JOB_TYPE, CLOSE_SYNC_TRIGGER)
+    _run_market_job_if_due(conn, now, already_fired_today, CLOSE_SYNC_RETRY_JOB_TYPE, CLOSE_SYNC_RETRY_TRIGGER)
 
 
 def _run_weekly_if_due(conn, now: datetime, already_fired_today: set[str]) -> None:

@@ -86,3 +86,24 @@ def test_confidence_below_buy_min_falls_through_to_watch():
     # previously min_confidence was declared in config but never checked.
     inp = _base_input(confidence=0.5)
     assert action_label(inp, DEFAULT_CFG) == "watch"
+
+
+# --- provisional (in-session) label rule ---
+from pipeline.action_label import provisional_label
+
+
+def test_provisional_label_downgrades_only_on_a_risk_trigger():
+    assert provisional_label("stay_out", "watch", risk_triggered=True) == ("stay_out", True)
+    assert provisional_label("reduce_exit", "hold", risk_triggered=True) == ("reduce_exit", True)
+    assert provisional_label("stay_out", "watch", risk_triggered=False) == ("watch", False)  # noise: keep official
+
+
+def test_provisional_label_never_upgrades_before_the_close():
+    assert provisional_label("buy_accumulate", "watch", risk_triggered=False) == ("watch", False)
+    assert provisional_label("watch", "stay_out", risk_triggered=True) == ("stay_out", False)
+
+
+def test_provisional_label_without_official_caps_buy_and_stores_nothing():
+    assert provisional_label("buy_accumulate", None, risk_triggered=False) == ("watch", False)
+    assert provisional_label("stay_out", None, risk_triggered=True) == ("stay_out", False)
+    assert provisional_label(None, "watch", risk_triggered=False) == ("watch", False)

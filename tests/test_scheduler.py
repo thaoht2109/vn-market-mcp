@@ -76,14 +76,15 @@ def test_run_due_jobs_enqueues_watchlist_once_per_day(db_conn, monkeypatch):
         db_conn.commit()
 
 
-def test_intraday_slot_fires_every_two_hours_while_market_open():
+def test_intraday_slot_fires_during_the_session_only():
     from datetime import datetime, timezone
     from ops.scheduler import intraday_slot
 
     def utc(h, m, day=2):  # 2026-10-02 is a Friday
         return datetime(2026, 10, day, h, m, tzinfo=timezone.utc)
 
-    assert [intraday_slot(utc(h, m)) for h, m in ((2, 15), (4, 0), (6, 0), (8, 0))] == ["0915", "1100", "1300", "1500"]
+    assert [intraday_slot(utc(h, m)) for h, m in ((2, 15), (4, 0), (6, 0))] == ["0915", "1100", "1300"]
+    assert intraday_slot(utc(8, 0)) is None          # 15:00 VN: close_sync/post own the close
     assert intraday_slot(utc(2, 0)) is None          # 09:00 VN, ATO — no bar yet
     assert intraday_slot(utc(5, 0)) is None          # 12:00 VN lunch break
     assert intraday_slot(utc(1, 0)) is None          # 08:00 VN
@@ -101,3 +102,25 @@ def test_macro_digest_is_not_scheduled_while_pipeline_llm_is_off():
     fired: set[str] = set()
     _run_macro_premarket_if_due(_NoDb(), datetime(2026, 10, 5, 2, 0, tzinfo=timezone.utc), fired)
     assert fired == set()
+
+
+def test_close_sync_runs_before_post_and_is_retried_in_the_evening(db_conn):
+    from ops.scheduler import CLOSE_SYNC_RETRY_TRIGGER, CLOSE_SYNC_TRIGGER, SCHEDULE
+
+    day = date(2020, 1, 8)  # Wednesday
+    seed_calendar_from_weekdays(db_conn, day, day, holidays=set())
+    db_conn.commit()
+    post = [t for name, t, _ in SCHEDULE if name == "scheduled_post"][0]
+    assert CLOSE_SYNC_TRIGGER < post < CLOSE_SYNC_RETRY_TRIGGER  # 15:05 < 15:20 < 18:00 VN
+    assert all(name != "scheduled_pre" for name, _, _ in SCHEDULE)
+
+    try:
+        fired: set[str] = set()
+        run_due_jobs(db_conn, datetime(2020, 1, 8, 8, 10, tzinfo=timezone.utc), fired)  # 15:10 VN
+        assert get_job(db_conn, f"close_sync:{MACRO_TICKER}:{day.isoformat()}")["status"] == "queued"
+        assert get_job(db_conn, f"close_sync_retry:{MACRO_TICKER}:{day.isoformat()}") is None
+        run_due_jobs(db_conn, datetime(2020, 1, 8, 11, 5, tzinfo=timezone.utc), fired)  # 18:05 VN
+        assert get_job(db_conn, f"close_sync_retry:{MACRO_TICKER}:{day.isoformat()}")["status"] == "queued"
+    finally:
+        db_conn.execute("DELETE FROM jobs WHERE job_key LIKE %s", (f"%:{day.isoformat()}",))
+        db_conn.commit()
