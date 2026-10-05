@@ -87,3 +87,19 @@ def action_label(inp: ActionLabelInput, cfg: ActionLabelConfig) -> str | None:
     if inp.score >= cfg.watch_min_score:
         return "watch"
     return "stay_out"
+
+
+def personal_label(
+    label: str | None, holding_state: str, score: float, confidence: float, data_stale: bool,
+    cfg: ActionLabelConfig,
+) -> str | None:
+    """The holder's version of a position-neutral label (action_label's holding branch)."""
+    if label is None or holding_state != "holding":
+        return label
+    if data_stale or confidence < cfg.min_confidence_floor:
+        return "stay_out"
+    if label == "reduce_exit" or score < cfg.reduce_exit_max_score:
+        return "reduce_exit"
+    if label == "stay_out" and score >= cfg.watch_min_score:
+        return "reduce_exit"  # a good score labelled stay_out = a Synthesis downgrade: exit, don't hold
+    return "hold"

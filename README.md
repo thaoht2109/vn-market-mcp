@@ -224,7 +224,7 @@ Các ngưỡng nhãn nằm ở `action_labels` trong `vn-rules.yaml`.
 | `query_history` | Lịch sử `prices` / `fundamentals` / `foreign_flow` |
 | `explain_run` | Giải thích một lần chạy (stop-loss, lý do nhãn) |
 | `list_predictions`, `get_stats` | Danh sách dự báo, thống kê chấm điểm |
-| `set_position`, `clear_position` | Khai báo hoặc xóa trạng thái "đang nắm giữ" |
+| `set_position`, `clear_position` | Khai báo hoặc xóa trạng thái "đang nắm giữ", riêng từng người dùng. Người đang giữ mã thấy nhãn `hold`/`reduce_exit` thay cho nhãn chung |
 | `watch_ticker`, `unwatch_ticker`, `list_watchlist` | Danh sách theo dõi riêng từng người dùng (`declared_by`). Mã được theo dõi, kể cả ngoài VN30, được phân tích theo lịch cùng VN30 |
 | `get_market_digest_input`, `get_weekly_digest_input` | Dữ liệu đầu vào cho bản tin trước phiên và bản tin tuần |
 
@@ -253,6 +253,32 @@ Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trư
 
 - Stdout của MCP stdio chỉ được chứa JSON-RPC. Mọi log đi qua stderr (`ops/alerting.py`).
 - Skill `vn-stock-analyze` chỉ được nạp khi thư mục có tổ tiên `.git`. File gitlink `vn-market-mcp/.git` (nội dung `gitdir: ../../.git`) đảm nhiệm việc này. File này **không được Git theo dõi**, nên khi clone mới phải tạo lại bằng tay, và **đừng xóa**. Nạp skill bằng: `hermes skills trust /opt/vn-market-mcp`.
+
+**Nhiều người dùng, dữ liệu tách riêng.** Dữ liệu thị trường và kết quả phân tích dùng chung (mỗi mã chỉ tải và phân tích một lần, nhãn trong `predictions` không phụ thuộc vị thế của ai). Phần riêng của từng người gồm vị thế, danh sách theo dõi, bộ nhớ và phiên chat Hermes, và kết quả phân tích gửi về. Mỗi người dùng một Hermes profile, mỗi profile có bot Telegram riêng:
+
+1. Tạo bot mới qua @BotFather, rồi tạo profile (trong thư mục `hermes-docker-compose`):
+
+   ```bash
+   docker compose exec gateway hermes profile create alice --clone
+   ```
+
+   Profile nằm ở `~/.hermes/profiles/alice/` với `config.yaml`, `.env`, `memories/` và `sessions/` riêng.
+2. Trong `~/.hermes/profiles/alice/.env`: đặt `TELEGRAM_BOT_TOKEN=<token bot của alice>` và `TELEGRAM_ALLOWED_USERS=<telegram user id của alice>`, để chỉ chủ profile chat được với bot.
+3. Trong `~/.hermes/profiles/alice/config.yaml`, mục `mcp_servers.vn-market-mcp.env`, thêm `VNMCP_USER_ID: alice`. Server MCP của profile này luôn dùng id đó, bỏ qua `declared_by` do mô hình điền vào, nên người dùng không thể đọc hay sửa dữ liệu của người khác qua chat. Profile không đặt biến này (profile `default` hiện tại) vẫn dùng `declared_by` như cũ.
+4. Đăng ký nơi nhận kết quả, rồi khởi động lại worker:
+
+   ```bash
+   # users.env (cạnh docker-compose.yml, không commit): token mà worker dùng để gửi qua bot của alice
+   echo 'TELEGRAM_BOT_TOKEN_ALICE=<token bot của alice>' >> users.env
+   docker compose exec postgres psql -U vnmcp_admin -p 5433 vnmcp -c \
+     "INSERT INTO users (user_id, chat_id, bot_token_env) VALUES ('alice', '<telegram user id của alice>', 'TELEGRAM_BOT_TOKEN_ALICE')"
+   docker compose up -d worker
+   ```
+
+   Kết quả `run_analysis` và `watch_ticker` của alice chỉ gửi vào chat của alice. Yêu cầu từ người chưa đăng ký trong `users` vẫn gửi về `TELEGRAM_ALERT_CHAT_ID` như trước. Lỗi vận hành (job crash) vẫn chỉ gửi về chat vận hành.
+5. Khởi động lại gateway (`docker compose restart gateway`; một gateway phục vụ được nhiều profile) rồi kiểm tra: `docker compose exec gateway hermes -p alice mcp test vn-market-mcp`.
+
+Sau khi chạy migration 016 cần chạy lại `python -m db.setup_roles` để cấp quyền bảng `users` cho các role.
 
 Có thể kiểm thử không cần Hermes bằng MCP Inspector: `npx @modelcontextprotocol/inspector python -m mcp_server.server`.
 

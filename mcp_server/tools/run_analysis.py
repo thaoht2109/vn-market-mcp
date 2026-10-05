@@ -19,6 +19,7 @@ import yaml
 
 from mcp_server.connection import get_rw_conn
 from mcp_server.envelope import build_envelope
+from mcp_server.identity import pinned_user
 from ops.alerting import log_event
 from pipeline.calendar import NoCalendarDataError, latest_trading_day
 from pipeline.jobs import enqueue, get_job
@@ -68,7 +69,10 @@ def run_analysis_tool(ticker: str, style: str = "long", depth: str = "quick") ->
                     sources=["postgres"], as_of=run_as_of,
                 )
 
-        job_key, created = enqueue(conn, ticker, job_type="on_demand", style=style, depth=depth, requested_by="mcp")
+        job_key, created = enqueue(
+            conn, ticker, job_type="on_demand", style=style, depth=depth,
+            requested_by=f"user:{pinned_user()}" if pinned_user() else "mcp",
+        )
 
     log_event("mcp_run_analysis_enqueued", ticker=ticker, job_key=job_key, created=created)
     return build_envelope(

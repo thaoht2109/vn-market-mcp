@@ -107,3 +107,25 @@ def test_provisional_label_without_official_caps_buy_and_stores_nothing():
     assert provisional_label("buy_accumulate", None, risk_triggered=False) == ("watch", False)
     assert provisional_label("stay_out", None, risk_triggered=True) == ("stay_out", False)
     assert provisional_label(None, "watch", risk_triggered=False) == ("watch", False)
+
+
+# --- per-user holder view of a position-neutral (shared) label ---
+from pipeline.action_label import personal_label
+
+
+def test_personal_label_matches_labelling_the_holder_directly():
+    for score in (20, 39, 40, 50, 55, 69, 70, 90):
+        for conf in (0.1, 0.5, 0.7):
+            for stale in (False, True):
+                for regime in ("risk_on", "risk_off"):
+                    neutral = action_label(_base_input(holding_state="unknown", score=score, confidence=conf,
+                                                       data_stale=stale, regime=regime), DEFAULT_CFG)
+                    holder = action_label(_base_input(holding_state="holding", score=score, confidence=conf,
+                                                      data_stale=stale, regime=regime), DEFAULT_CFG)
+                    assert personal_label(neutral, "holding", score, conf, stale, DEFAULT_CFG) == holder
+                    assert personal_label(neutral, "none", score, conf, stale, DEFAULT_CFG) == neutral
+
+
+def test_personal_label_turns_a_synthesis_downgrade_into_exit_for_a_holder():
+    assert personal_label("stay_out", "holding", 75, 0.7, False, DEFAULT_CFG) == "reduce_exit"
+    assert personal_label(None, "holding", 75, 0.7, False, DEFAULT_CFG) is None

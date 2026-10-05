@@ -31,16 +31,9 @@ def _split_chunks(text: str, max_len: int) -> list[str]:
     return [text[i : i + max_len] for i in range(0, len(text), max_len)] or [text]
 
 
-def send_ops_alert(text: str) -> bool:
-    """Gui canh bao toi group van hanh qua Telegram Bot API.
-
-    Can TELEGRAM_BOT_TOKEN va TELEGRAM_ALERT_CHAT_ID trong env; neu thieu,
-    chi ghi log va bo qua (khong lam crash job vi thieu cau hinh alert).
-    """
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_ALERT_CHAT_ID")
+def send_telegram(token: str | None, chat_id: str | None, text: str) -> bool:
     if not token or not chat_id:
-        log_event("alert_skipped", reason="missing TELEGRAM_BOT_TOKEN or TELEGRAM_ALERT_CHAT_ID", text=text)
+        log_event("alert_skipped", reason="missing bot token or chat id", text=text)
         return False
 
     ok = True
@@ -56,3 +49,22 @@ def send_ops_alert(text: str) -> bool:
             log_event("alert_send_failed", error=str(exc), text=chunk)
             ok = False
     return ok
+
+
+def send_ops_alert(text: str) -> bool:
+    """Gui canh bao toi group van hanh qua Telegram Bot API.
+
+    Can TELEGRAM_BOT_TOKEN va TELEGRAM_ALERT_CHAT_ID trong env; neu thieu,
+    chi ghi log va bo qua (khong lam crash job vi thieu cau hinh alert).
+    """
+    return send_telegram(os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_ALERT_CHAT_ID"), text)
+
+
+def send_user_message(conn, user_id: str, text: str) -> bool | None:
+    """Send to a registered user's own chat through their own Hermes bot (users table).
+    None = user not registered (caller decides on a fallback); False = send failed."""
+    row = conn.execute("SELECT chat_id, bot_token_env FROM users WHERE user_id = %s", (user_id,)).fetchone()
+    if row is None:
+        return None
+    chat_id, token_env = row
+    return send_telegram(os.environ.get(token_env), chat_id, text)

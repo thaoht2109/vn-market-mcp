@@ -62,3 +62,46 @@ def test_run_one_marks_job_failed_when_run_analysis_does_not_return_ok(db_conn):
         db_conn.execute("DELETE FROM jobs WHERE ticker = 'WORKERFAIL'")
         db_conn.execute("DELETE FROM tickers WHERE ticker = 'WORKERFAIL'")
         db_conn.commit()
+
+
+def test_on_demand_result_goes_only_to_the_requesting_users_chat_with_their_label(db_conn, monkeypatch, tmp_path):
+    import json
+
+    from pipeline.positions import set_position
+
+    snap = tmp_path / "s.json"
+    snap.write_text(json.dumps({"action_label": "watch", "composite_score": 60, "confidence": 0.7}))
+
+    insert_ticker(db_conn, "WORKERUSR")
+    db_conn.execute("DELETE FROM jobs WHERE ticker = 'WORKERUSR'")
+    db_conn.execute(
+        "INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings)"
+        " VALUES ('worker-usr-run', 'on_demand', ARRAY['WORKERUSR'], 'long', 'quick', now(), %s, '[]')", (str(snap),),
+    )
+    db_conn.execute("INSERT INTO users (user_id, chat_id, bot_token_env) VALUES ('alice', '111', 'TELEGRAM_BOT_TOKEN_ALICE')")
+    set_position(db_conn, "WORKERUSR", avg_cost=10.0, declared_by="alice")
+    db_conn.commit()
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN_ALICE", "alice-token")
+    enqueue(db_conn, "WORKERUSR", job_type="on_demand", requested_by="user:alice")
+    enqueue(db_conn, "WORKERUSR", job_type="on_demand", requested_by="user:nobody")
+
+    ok = RunResult(run_id="worker-usr-run", status="ok", ticker="WORKERUSR", action_label="watch", message="")
+    try:
+        with patch("ops.worker.run_analysis", return_value=ok), \
+             patch("ops.alerting.send_telegram", return_value=True) as tg, \
+             patch("ops.worker.send_ops_alert") as ops_alert:
+            run_one(db_conn)
+            run_one(db_conn)
+
+        token, chat_id, text = tg.call_args.args
+        assert (token, chat_id) == ("alice-token", "111")
+        assert "nhãn: hold" in text  # alice holds it: the shared "watch" becomes her "hold"
+        ops_alert.assert_called_once()  # unregistered requester: legacy fallback to the ops chat
+        assert "nhãn: watch" in ops_alert.call_args.args[0]
+    finally:
+        db_conn.execute("DELETE FROM jobs WHERE ticker = 'WORKERUSR'")
+        db_conn.execute("DELETE FROM positions WHERE ticker = 'WORKERUSR'")
+        db_conn.execute("DELETE FROM users WHERE user_id = 'alice'")
+        db_conn.execute("DELETE FROM runs WHERE run_id = 'worker-usr-run'")
+        db_conn.execute("DELETE FROM tickers WHERE ticker = 'WORKERUSR'")
+        db_conn.commit()

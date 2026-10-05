@@ -31,7 +31,6 @@ from pipeline.coverage import (
 from pipeline.fundamentals import fundamental_snapshot, peer_metrics, valuation_component
 from pipeline.indicators import technical_snapshot
 from pipeline.ingest import IngestBatchError, assert_batch_ok, ingest_fundamentals_and_flow, ingest_news, ingest_ticker_day
-from pipeline.positions import get_holding_state
 from pipeline.llm_gate import llm_pipeline_enabled
 from pipeline.regime import get_market_context
 from pipeline.report import render_synthesis_report
@@ -334,7 +333,9 @@ def run_analysis(
         # các trường hợp yếu hơn mà không cần đếm mẫu per-ticker.
         conf = min(conf, rules["tier_b"]["confidence_cap"])
 
-    holding_state = get_holding_state(conn, ticker)
+    # Runs are shared by every user: label position-neutral, each user's holding view is applied
+    # when they read it (pipeline.positions.personalize).
+    holding_state = "unknown"
 
     plan = risk_plan(
         entry_ref_price=today_close,
@@ -396,6 +397,7 @@ def run_analysis(
     snapshot["weight_coverage"] = composite.weight_coverage
     snapshot["confidence"] = conf
     snapshot["action_label"] = label
+    snapshot["data_stale"] = data_stale
 
     snapshot_ref = write_snapshot(snapshot_dir, run_id, snapshot)
 

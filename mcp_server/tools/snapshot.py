@@ -6,6 +6,8 @@ from pathlib import Path
 
 from mcp_server.connection import get_ro_conn
 from mcp_server.envelope import build_envelope
+from mcp_server.identity import pinned_user
+from pipeline.positions import personalize
 
 
 def get_snapshot_tool(ticker: str | None = None, run_id: str | None = None) -> dict:
@@ -40,6 +42,10 @@ def get_snapshot_tool(ticker: str | None = None, run_id: str | None = None) -> d
         )
 
     snapshot = json.loads(snapshot_path.read_text())
+    user = pinned_user()
+    if user:
+        with get_ro_conn() as conn:
+            snapshot = personalize(conn, snapshot, ticker or snapshot.get("ticker"), user)
     return build_envelope(
         {"status": "ok", "run_id": found_run_id, "snapshot": snapshot},
         sources=["postgres", "snapshot_file"], as_of=run_as_of,

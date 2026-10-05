@@ -42,7 +42,7 @@ def get_job_status(job_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 def get_snapshot(ticker: str | None = None, run_id: str | None = None) -> dict[str, Any]:
-    """Đọc lại snapshot đã lưu, theo ticker (mới nhất) hoặc theo run_id."""
+    """Đọc lại snapshot đã lưu, theo ticker (mới nhất) hoặc theo run_id (nhãn theo vị thế của người hỏi)."""
     return get_snapshot_tool(ticker=ticker, run_id=run_id)
 
 
@@ -75,19 +75,20 @@ def get_stats() -> dict[str, Any]:
 
 
 @mcp.tool()
-def set_position(ticker: str, avg_cost: float | None, declared_by: str) -> dict[str, Any]:
-    """Tự khai đang nắm giữ một mã (không suy luận từ dữ liệu khác)."""
+def set_position(ticker: str, avg_cost: float | None, declared_by: str | None = None) -> dict[str, Any]:
+    """Tự khai đang nắm giữ một mã (không suy luận từ dữ liệu khác). Vị thế là riêng của từng người;
+    với người đang giữ, nhãn họ thấy chuyển thành hold/reduce_exit."""
     return set_position_tool(ticker, avg_cost, declared_by)
 
 
 @mcp.tool()
-def clear_position(ticker: str, declared_by: str) -> dict[str, Any]:
+def clear_position(ticker: str, declared_by: str | None = None) -> dict[str, Any]:
     """Tự khai đã thoát vị thế một mã."""
     return clear_position_tool(ticker, declared_by)
 
 
 @mcp.tool()
-def watch_ticker(ticker: str, declared_by: str) -> dict[str, Any]:
+def watch_ticker(ticker: str, declared_by: str | None = None) -> dict[str, Any]:
     """Thêm một mã (kể cả ngoài VN30) vào danh sách theo dõi của người dùng declared_by.
 
     Mã theo dõi được phân tích tự động cùng VN30 mỗi phiên; lần thêm xếp hàng một lần
@@ -96,13 +97,13 @@ def watch_ticker(ticker: str, declared_by: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def unwatch_ticker(ticker: str, declared_by: str) -> dict[str, Any]:
+def unwatch_ticker(ticker: str, declared_by: str | None = None) -> dict[str, Any]:
     """Bỏ một mã khỏi danh sách theo dõi của người dùng declared_by."""
     return unwatch_ticker_tool(ticker, declared_by)
 
 
 @mcp.tool()
-def list_watchlist(declared_by: str) -> dict[str, Any]:
+def list_watchlist(declared_by: str | None = None) -> dict[str, Any]:
     """Các mã người dùng declared_by đang theo dõi, kèm nhãn hành động gần nhất của từng mã."""
     return list_watchlist_tool(declared_by)
 

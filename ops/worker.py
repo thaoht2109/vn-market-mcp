@@ -8,6 +8,7 @@ Run as a long-lived process, separate from the Hermes/MCP process:
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -18,9 +19,10 @@ from llm.client import LLMCallError
 from llm.config import ModelsConfig
 from llm.macro import MACRO_JOB_TYPE, MacroDigestValidationError, run_macro_daily
 from mcp_server.connection import get_rw_conn
-from ops.alerting import log_event, send_ops_alert
+from ops.alerting import log_event, send_ops_alert, send_user_message
 from ops.scheduler import CLOSE_SYNC_JOB_TYPES, get_vn30_tickers
 from pipeline.ingest import sync_recent_prices
+from pipeline.positions import personalize
 from pipeline.jobs import claim_next, mark_done, mark_failed, reclaim_stale_running, release, requeue
 from pipeline.run_analysis import run_analysis
 from providers.vnstock_provider import VNStockProvider
@@ -82,6 +84,31 @@ def _run_close_sync(conn) -> None:
     log_event("close_sync_done", synced=len(outcomes) - len(failed), rebased=rebased, failed=failed)
 
 
+def _requester(job) -> str | None:
+    """The user behind an on-demand job: requested_by is "user:<id>" (run_analysis from a
+    pinned profile) or "watch:<id>"; "mcp"/"cron" have none."""
+    kind, _, user = (job.requested_by or "").partition(":")
+    return user if kind in ("user", "watch") and user else None
+
+
+def _notify(conn, job, text: str) -> None:
+    """A user's result goes only to that user's own chat. The shared ops chat gets it only
+    when nobody registered asked (legacy single-user setup)."""
+    user = _requester(job)
+    if user is None or send_user_message(conn, user, text) is None:
+        send_ops_alert(text)
+
+
+def _label_for(conn, job, run_id: str, label: str | None) -> str | None:
+    user = _requester(job)
+    if user is None:
+        return label
+    row = conn.execute("SELECT snapshot_ref FROM runs WHERE run_id = %s", (run_id,)).fetchone()
+    path = Path(row[0]) if row else None
+    snapshot = json.loads(path.read_text()) if path and path.exists() else {"action_label": label}
+    return personalize(conn, snapshot, job.ticker, user)["action_label"]
+
+
 def run_one(conn) -> bool:
     """Claim and process one job. Returns False if the queue was empty."""
     job = claim_next(conn)
@@ -124,14 +151,17 @@ def run_one(conn) -> bool:
         # Scheduled runs cover ~30 tickers: one Telegram message each is spam.
         # Results stay in the DB/snapshots; only on-demand runs ping the chat.
         if job.job_type == "on_demand":
-            header = f"[{job.ticker}] Phân tích xong — nhãn: {result.action_label}. run_id={result.run_id}"
-            send_ops_alert(f"{header}\n\n{result.report_text}" if result.report_text else header)
+            label = _label_for(conn, job, result.run_id, result.action_label)
+            header = f"[{job.ticker}] Phân tích xong — nhãn: {label}. run_id={result.run_id}"
+            _notify(conn, job, f"{header}\n\n{result.report_text}" if result.report_text else header)
     else:
         mark_failed(conn, job, f"{result.status}: {result.message}")
         release(conn, job)
         log_event("worker_job_finished", job_key=job.job_key, ticker=job.ticker, status=result.status)
         # A watched small cap fails coverage every scheduled run; that's expected, not an incident.
-        if job.job_type == "on_demand" or result.status != "insufficient_coverage":
+        if job.job_type == "on_demand":
+            _notify(conn, job, f"[{job.ticker}] {result.status}: {result.message}")
+        elif result.status != "insufficient_coverage":
             send_ops_alert(f"[{job.ticker}] {result.status}: {result.message}")
     return True
 
