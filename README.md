@@ -62,7 +62,7 @@ Tài liệu thiết kế: `../vn-trading-agent-plan_final.md`. Kế hoạch tri�
  worker ──chỉ lỗi vận hành──► nhóm ops (TELEGRAM_ALERT_CHAT_ID, bot chung)
 ```
 
-Các service trong `docker-compose.yml`:
+Các service trong `infrastructure/docker-compose.yml`:
 
 | Service | Lệnh | Vai trò |
 |---|---|---|
@@ -100,6 +100,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
 | `.hermes/skills/vn-market/vn-stock-analyze/` | Skill duy nhất cho phân tích cổ phiếu VN: định tuyến câu hỏi sang tool MCP, giọng văn, quy trình báo cáo. Dùng chung, chỉ đọc cho mọi profile |
 | `config/` | `vn-rules.yaml` (ngưỡng nghiệp vụ), `models.yaml` (mô hình LLM) |
+| `infrastructure/` | `docker-compose.yml`, `Dockerfile` (+ `.dockerignore`), `.env.example`: toàn bộ cấu hình Docker, mọi giá trị phụ thuộc máy (cổng, đường dẫn, tên project, số worker) khai báo qua `infrastructure/.env` |
 
 ## 4. Yêu cầu
 
@@ -114,8 +115,13 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 **5.1. Tạo file môi trường**
 
 ```bash
-cp .env.example .env && chmod 600 .env
+cp .env.example .env && chmod 600 .env                                              # lệnh chạy trên host
+cp infrastructure/.env.example infrastructure/.env && chmod 600 infrastructure/.env  # stack Docker
 ```
+
+`.env` gốc có `COMPOSE_FILE=infrastructure/docker-compose.yml`, nên mọi lệnh `docker compose ...` trong tài liệu này chạy được từ thư mục gốc. Compose lấy biến từ `infrastructure/.env` (thư mục chứa file compose); các mật khẩu role ở hai file phải trùng nhau.
+
+Khi chuyển sang máy khác, chỉ cần sửa `infrastructure/.env`: `POSTGRES_PUBLISH_PORT`/`POSTGRES_PUBLISH_BIND` (cổng trên host, khớp với `localhost:<cổng>` trong các URL ở `.env` gốc), `SNAPSHOTS_DIR` (thư mục snapshot, phải trùng với thư mục Hermes gateway mount), `WORKER_REPLICAS`, image. Giữ `COMPOSE_PROJECT_NAME=vn-market-mcp` trừ khi đổi luôn tên mạng `<tên>_default` bên Hermes; đổi tên này cũng tạo volume DB mới (`<tên>_pgdata`).
 
 Điền các biến `MCP_RO_PASSWORD`, `PIPELINE_RW_PASSWORD`, `RETENTION_JOB_PASSWORD`, `*_DATABASE_URL`, `VNSTOCK_API_KEY`, `TELEGRAM_BOT_TOKEN` và `TELEGRAM_ALERT_CHAT_ID`.
 
@@ -403,7 +409,7 @@ Có thể kiểm thử không cần Hermes bằng MCP Inspector: `npx @modelcont
 - **`config/models.yaml`** khai báo mô hình cho các vai trò LLM trong pipeline. Hiện không dùng vì pipeline đang tắt LLM.
 - **Bật lại vai trò LLM trong pipeline:**
   1. Đặt `llm.pipeline_enabled: true`.
-  2. Thêm khóa provider (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, …) vào service `worker` trong `docker-compose.yml`.
+  2. Thêm khóa provider (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, …) vào service `worker` trong `infrastructure/docker-compose.yml` và `infrastructure/.env`.
 
 ## 12. Kiểm thử
 
@@ -474,3 +480,4 @@ Các thay đổi lớn về cách dùng nhiều người (tháng 10/2026), mới
 | Một skill chung chỉ đọc (`skills.external_dirs`) thay cho hai skill Hermes tự viết; góc nhìn cá nhân nằm trong bộ nhớ profile | — | Skill cũ sao lưu ở `~/.hermes/backups/skills-retired-*` |
 | Từ bot chung + `gateway.profile_routes` chuyển sang mỗi người một bot riêng; `ops/add_user.sh`, `ops/remove_user.sh` không restart gateway | — | Thêm luật định tuyến cần restart; bot riêng thì không |
 | Worker chỉ gửi cảnh báo vận hành; Hermes trả lời mọi job theo yêu cầu, kể cả lần đầu của `watch_ticker` | `017` | Bỏ bảng `users` (tạo ở `016`) và token bot riêng phía worker |
+| Cấu hình Docker chuyển vào `infrastructure/`, mọi giá trị phụ thuộc máy khai báo trong `infrastructure/.env` | — | Thêm `COMPOSE_FILE` vào `.env` gốc và tạo `infrastructure/.env`; tên project cố định `vn-market-mcp` nên volume DB và mạng Hermes không đổi |

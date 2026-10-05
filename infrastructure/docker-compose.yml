@@ -1,0 +1,91 @@
+# Run from this directory (`cd infrastructure && docker compose up -d`) or from the repo root
+# with `docker compose -f infrastructure/docker-compose.yml ...`. Either way Compose reads
+# variables from infrastructure/.env — copy .env.example to .env and fill in the secrets.
+# Every machine-specific value (ports, paths, names, replicas) comes from that file; the
+# defaults below reproduce the original single-host setup.
+
+# Pinned so the volume (<name>_pgdata) and network (<name>_default, which the Hermes gateway
+# joins externally) keep their names even though this file no longer lives in vn-market-mcp/.
+name: ${COMPOSE_PROJECT_NAME:-vn-market-mcp}
+
+# --- shared blocks ------------------------------------------------------------------------
+x-app: &app
+  build:
+    context: ..
+    dockerfile: infrastructure/Dockerfile
+    args:
+      PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
+      PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-https://vnstocks.com/api/simple}
+  depends_on:
+    - postgres
+  restart: ${RESTART_POLICY:-unless-stopped}
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16}
+    environment:
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-vnmcp_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-changeme_local_only}
+      POSTGRES_DB: ${POSTGRES_DB:-vnmcp}
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+      PGPORT: ${POSTGRES_PORT:-5433}
+    # Non-default in-network port: 5432 is blocked by an iptables rule on the original host,
+    # and Hermes' MCP URLs point at postgres:5433.
+    command: ["-p", "${POSTGRES_PORT:-5433}"]
+    ports:
+      - "${POSTGRES_PUBLISH_BIND:-127.0.0.1}:${POSTGRES_PUBLISH_PORT:-55432}:${POSTGRES_PORT:-5433}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # Polls the `jobs` table and runs pipeline.run_analysis in the background (spec §4.8) —
+  # separate process from the Hermes/MCP container so MCP's run_analysis tool call never blocks.
+  worker:
+    <<: *app
+    # N replicas pull from the same `jobs` queue in parallel. Safe without any code change:
+    # claim_next (pipeline/jobs.py) takes a pg_try_advisory_lock on hash(ticker, job_type), so two
+    # workers never claim the same ticker+mode. The real ceiling is the vnstock API rate limit
+    # (watch worker logs for `worker_job_rate_limited`), not this queue. No container_name/ports
+    # here, so Compose can scale this service freely.
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+    # Bind-mounted (not a named volume) so snapshot files land on the host at SNAPSHOTS_DIR — the
+    # SAME host path the Hermes gateway bind-mounts read-only as /opt/vn-market-mcp, which is how
+    # mcp_server's get_snapshot tool reads a run_analysis snapshot_ref.
+    volumes:
+      - ${SNAPSHOTS_DIR:-../snapshots}:/app/snapshots
+    environment:
+      PIPELINE_RW_DATABASE_URL: postgresql://pipeline_rw:${PIPELINE_RW_PASSWORD:?set PIPELINE_RW_PASSWORD in infrastructure/.env}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-vnmcp}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALERT_CHAT_ID: ${TELEGRAM_ALERT_CHAT_ID:-}
+      VNSTOCK_API_KEY: ${VNSTOCK_API_KEY:-}
+      # No LLM keys here: llm.pipeline_enabled is false (config/vn-rules.yaml), so nothing in this
+      # container calls a model. To re-enable the llm/ roles, set that flag AND add the provider
+      # keys llm/providers.py reads (ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY/_BASE_URL,
+      # GROK_API_KEY/_BASE_URL) to this block and to .env.
+
+  # Decides WHEN/for-whom to run analysis (spec §4.2 cron table); only enqueues into `jobs`,
+  # never runs the pipeline itself — `worker` does that.
+  scheduler:
+    <<: *app
+    command: ["python", "-m", "ops.scheduler"]
+    environment:
+      PIPELINE_RW_DATABASE_URL: postgresql://pipeline_rw:${PIPELINE_RW_PASSWORD:?set PIPELINE_RW_PASSWORD in infrastructure/.env}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-vnmcp}
+
+  # Grades open predictions at the 20/60/120-session horizons into prediction_outcomes,
+  # deterministically — no LLM (spec §10, Phase 4).
+  grading:
+    <<: *app
+    command: ["python", "-m", "ops.grading_job"]
+    environment:
+      PIPELINE_RW_DATABASE_URL: postgresql://pipeline_rw:${PIPELINE_RW_PASSWORD:?set PIPELINE_RW_PASSWORD in infrastructure/.env}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-vnmcp}
+
+  # Weekly data-retention sweep (spec §7.4) — only process using the retention_job role, the
+  # only role with DELETE.
+  retention:
+    <<: *app
+    command: ["python", "-m", "ops.retention_job"]
+    environment:
+      RETENTION_JOB_DATABASE_URL: postgresql://retention_job:${RETENTION_JOB_PASSWORD:?set RETENTION_JOB_PASSWORD in infrastructure/.env}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-vnmcp}
+
+volumes:
+  pgdata:
