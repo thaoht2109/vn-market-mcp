@@ -6,6 +6,18 @@ import pytest
 from pipeline.news import ensure_news_partitions, item_hash, load_sources, store_news_item
 
 
+@pytest.fixture(autouse=True)
+def _wipe(db_conn):
+    # store_news_item's transaction() block commits when the connection is idle (it is only a savepoint
+    # inside an open transaction), so these rows outlive the test unless wiped.
+    def wipe():
+        db_conn.execute("DELETE FROM news_items WHERE source LIKE 'test_%'")
+        db_conn.commit()
+    wipe()
+    yield
+    wipe()
+
+
 def _kw(**over):
     p = datetime(2026, 10, 6, 1, 0, tzinfo=timezone.utc)
     base = dict(source="test_a", url="http://t/x1", title="t1", summary=None, published_at=p, fetched_at=p,
