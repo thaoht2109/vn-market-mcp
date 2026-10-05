@@ -43,14 +43,10 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ALERT_CHAT_ID: ${TELEGRAM_ALERT_CHAT_ID:-}
       VNSTOCK_API_KEY: ${VNSTOCK_API_KEY:-}
-      # LLM providers for llm/providers.py (Phase 5 synthesis_daily, scheduled_post
-      # mode only) — same priority order as .env: DeepSeek primary, Claude et al fallback.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
-      GROK_API_KEY: ${GROK_API_KEY:-}
-      GROK_BASE_URL: ${GROK_BASE_URL:-}
+      # No LLM keys here: llm.pipeline_enabled is false (config/vn-rules.yaml), so nothing in this
+      # container calls a model. To re-enable the llm/ roles, set that flag AND add the provider
+      # keys llm/providers.py reads (ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY/_BASE_URL,
+      # GROK_API_KEY/_BASE_URL) back to this block.
     depends_on:
       - postgres
     restart: unless-stopped
