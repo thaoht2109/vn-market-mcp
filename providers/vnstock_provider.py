@@ -191,6 +191,22 @@ class VNStockProvider:
         # only exist on the KBS price board, not VCI — independent of self.source.
         return Trading(source="KBS")
 
+    def lookup_listing(self, ticker: str) -> tuple[str, str] | None:
+        """(name, exchange) if `ticker` is listed on HOSE/HNX/UPCoM, else None."""
+        if "listing" in self._clients:
+            listing = self._clients["listing"]
+        else:
+            from vnstock.api.listing import Listing
+
+            listing = Listing()
+        df = listing.symbols_by_exchange()
+        rows = df[df["symbol"] == ticker]
+        if rows.empty:
+            return None
+        row = rows.iloc[0]
+        exchange = str(row["exchange"]).upper()
+        return str(row.get("organ_short_name") or row.get("organ_name") or ticker), {"HSX": "HOSE"}.get(exchange, exchange)
+
     def get_market_index(self, symbol: str, start: date, end: date) -> pd.DataFrame:
         """OHLCV for a market index (e.g. VNINDEX), for pipeline.regime.
 

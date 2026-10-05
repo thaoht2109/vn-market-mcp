@@ -9,6 +9,7 @@ from pipeline.coverage import (
     classify_universe_tier,
     coverage_check,
     gather_coverage_inputs,
+    resolve_or_register_ticker,
     resolve_ticker,
 )
 from tests.conftest import insert_ticker
@@ -39,6 +40,24 @@ def test_resolve_ticker_raises_with_suggestions_for_unknown_ticker(db_conn):
     # Don't assert suggestions is a *subset* of {VNM, VNI} — the shared DB
     # may contain other tickers that also fuzzy-match "VNX" (e.g. VN30).
     assert {"VNM", "VNI"} <= set(exc_info.value.suggestions)
+
+
+class _Listing:
+    def lookup_listing(self, ticker):
+        return ("Tổng CTCP DIGTEST", "HOSE") if ticker == "DIGTEST" else None
+
+
+def test_resolve_or_register_ticker_registers_a_listed_non_vn30_ticker(db_conn):
+    match = resolve_or_register_ticker(db_conn, _Listing(), " digtest ")
+    assert (match.ticker, match.exchange) == ("DIGTEST", "HOSE")
+    assert resolve_ticker(db_conn, "DIGTEST").name == "Tổng CTCP DIGTEST"
+    assert classify_universe_tier(db_conn, "DIGTEST") == "B"
+
+
+def test_resolve_or_register_ticker_still_rejects_an_unlisted_ticker(db_conn):
+    with pytest.raises(UnknownTickerError):
+        resolve_or_register_ticker(db_conn, _Listing(), "NOTLISTED")
+    assert db_conn.execute("SELECT 1 FROM tickers WHERE ticker = 'NOTLISTED'").fetchone() is None
 
 
 def test_classify_universe_tier_a_for_vn30_member(db_conn):

@@ -131,9 +131,11 @@ def upsert_corporate_events(conn: psycopg.Connection, events: list[CorporateEven
     return len(events)
 
 
-def ingest_ticker_day(conn: psycopg.Connection, provider, ticker: str, trade_date: date) -> IngestOutcome:
+def ingest_ticker_day(
+    conn: psycopg.Connection, provider, ticker: str, trade_date: date, start: date | None = None,
+) -> IngestOutcome:
     try:
-        bars = provider.get_ohlcv(ticker, trade_date, trade_date)
+        bars = provider.get_ohlcv(ticker, start or trade_date, trade_date)
     except Exception as exc:  # network/schema error from vnstock — surface, never swallow
         return IngestOutcome(ticker=ticker, status="error", detail=str(exc), rows_written=0)
 

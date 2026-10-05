@@ -19,6 +19,7 @@ from mcp_server.tools.run_analysis import get_job_status_tool, run_analysis_tool
 from mcp_server.tools.snapshot import get_snapshot_tool
 from mcp_server.tools.stock_report import get_stock_report_tool, save_commentary_tool
 from mcp_server.tools.stats import get_stats_tool
+from mcp_server.tools.watchlist import list_watchlist_tool, unwatch_ticker_tool, watch_ticker_tool
 
 mcp = FastMCP("vn-market-mcp")
 
@@ -83,6 +84,27 @@ def set_position(ticker: str, avg_cost: float | None, declared_by: str) -> dict[
 def clear_position(ticker: str, declared_by: str) -> dict[str, Any]:
     """Tự khai đã thoát vị thế một mã."""
     return clear_position_tool(ticker, declared_by)
+
+
+@mcp.tool()
+def watch_ticker(ticker: str, declared_by: str) -> dict[str, Any]:
+    """Thêm một mã (kể cả ngoài VN30) vào danh sách theo dõi của người dùng declared_by.
+
+    Mã theo dõi được phân tích tự động cùng VN30 mỗi phiên; lần thêm xếp hàng một lần
+    phân tích ngay (data.job_id). status="not_found" nếu mã không niêm yết."""
+    return watch_ticker_tool(ticker, declared_by)
+
+
+@mcp.tool()
+def unwatch_ticker(ticker: str, declared_by: str) -> dict[str, Any]:
+    """Bỏ một mã khỏi danh sách theo dõi của người dùng declared_by."""
+    return unwatch_ticker_tool(ticker, declared_by)
+
+
+@mcp.tool()
+def list_watchlist(declared_by: str) -> dict[str, Any]:
+    """Các mã người dùng declared_by đang theo dõi, kèm nhãn hành động gần nhất của từng mã."""
+    return list_watchlist_tool(declared_by)
 
 
 @mcp.tool()

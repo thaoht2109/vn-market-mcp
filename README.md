@@ -81,7 +81,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `pipeline/run_analysis.py` | Điều phối toàn bộ pipeline cho một mã, kèm CLI |
 | `pipeline/stock_report.py` | Render báo cáo cổ phiếu bằng code |
 | `pipeline/jobs.py`, `pipeline/grading.py` | Hàng đợi job, chấm dự báo |
-| `mcp_server/` | MCP server và 13 tool |
+| `mcp_server/` | MCP server và 16 tool |
 | `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, backup |
 | `db/` | Migrations (`001`–`014`), tạo role, tạo DB test |
 | `llm/`, `schemas/` | Các vai trò LLM trong pipeline (đang **tắt**, giữ lại để bật sau) |
@@ -212,7 +212,7 @@ Các ngưỡng nhãn nằm ở `action_labels` trong `vn-rules.yaml`.
 
 ## 10. MCP server và Hermes
 
-`python -m mcp_server.server` (stdio) cung cấp 13 tool. Tool chỉ đọc dùng role `mcp_ro`, tool ghi dùng role `pipeline_rw`.
+`python -m mcp_server.server` (stdio) cung cấp 16 tool. Tool chỉ đọc dùng role `mcp_ro`, tool ghi dùng role `pipeline_rw`.
 
 | Tool | Chức năng |
 |---|---|
@@ -225,6 +225,7 @@ Các ngưỡng nhãn nằm ở `action_labels` trong `vn-rules.yaml`.
 | `explain_run` | Giải thích một lần chạy (stop-loss, lý do nhãn) |
 | `list_predictions`, `get_stats` | Danh sách dự báo, thống kê chấm điểm |
 | `set_position`, `clear_position` | Khai báo hoặc xóa trạng thái "đang nắm giữ" |
+| `watch_ticker`, `unwatch_ticker`, `list_watchlist` | Danh sách theo dõi riêng từng người dùng (`declared_by`). Mã được theo dõi, kể cả ngoài VN30, được phân tích theo lịch cùng VN30 |
 | `get_market_digest_input`, `get_weekly_digest_input` | Dữ liệu đầu vào cho bản tin trước phiên và bản tin tuần |
 
 Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trường hợp:

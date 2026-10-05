@@ -14,7 +14,7 @@ def test_run_due_jobs_enqueues_weekly_on_friday_vn30_only(db_conn):
         (date(2026, 1, 1),),
     )
     db_conn.execute(
-        "INSERT INTO watchlist_extra (ticker, confirmed_at, status) VALUES ('WEEKEXTRA', now(), 'active')"
+        "INSERT INTO watchlist_extra (ticker, added_by, confirmed_at, status) VALUES ('WEEKEXTRA', 'u1', now(), 'active')"
     )
     friday = date(2020, 1, 10)
     seed_calendar_from_weekdays(db_conn, friday, friday, holidays=set())

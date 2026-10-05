@@ -26,11 +26,11 @@ from pipeline.coverage import (
     classify_universe_tier,
     coverage_check,
     gather_coverage_inputs,
-    resolve_ticker,
+    resolve_or_register_ticker,
 )
 from pipeline.fundamentals import fundamental_snapshot, peer_metrics, valuation_component
 from pipeline.indicators import technical_snapshot
-from pipeline.ingest import IngestBatchError, assert_batch_ok, ingest_batch, ingest_fundamentals_and_flow, ingest_news
+from pipeline.ingest import IngestBatchError, assert_batch_ok, ingest_fundamentals_and_flow, ingest_news, ingest_ticker_day
 from pipeline.positions import get_holding_state
 from pipeline.llm_gate import llm_pipeline_enabled
 from pipeline.regime import get_market_context
@@ -62,6 +62,10 @@ class RunResult:
     action_label: str | None
     message: str
     report_text: str | None = None
+
+
+# ~3 calendar years: covers coverage.min_price_history_days (500 sessions) with margin.
+HISTORY_BACKFILL_DAYS = 3 * 365
 
 
 def _load_rules() -> dict:
@@ -148,7 +152,7 @@ def run_analysis(
     rules = _load_rules()
 
     try:
-        match = resolve_ticker(conn, ticker_raw)
+        match = resolve_or_register_ticker(conn, provider, ticker_raw)
     except UnknownTickerError as exc:
         return RunResult(run_id=None, status="unknown_ticker", ticker=ticker_raw, action_label=None, message=str(exc))
 
@@ -157,7 +161,17 @@ def run_analysis(
     trading_date = latest_trading_day(conn, now)
     run_id = f"{mode}:{ticker}:{int(time.time() * 1000)}"
 
-    outcomes = ingest_batch(conn, provider, [ticker], trading_date)
+    # VN30 is kept current by close_sync; any other ticker may be new or untouched for weeks.
+    # Short history -> pull HISTORY_BACKFILL_DAYS; otherwise fill from the last stored bar.
+    # ponytail: a gap spanning an ex-date stays on the old price basis until close_sync rebases it.
+    stored_days, last_stored = conn.execute(
+        "SELECT count(*), max(trade_date) FROM prices_daily WHERE ticker = %s", (ticker,)
+    ).fetchone()
+    if stored_days >= rules["coverage"]["min_price_history_days"]:
+        start = last_stored
+    else:
+        start = trading_date - timedelta(days=HISTORY_BACKFILL_DAYS)
+    outcomes = [ingest_ticker_day(conn, provider, ticker, trading_date, start=start)]
     try:
         assert_batch_ok(outcomes)
     except IngestBatchError as exc:

@@ -1,6 +1,6 @@
 ---
 name: vn-stock-analyze
-description: "Phân tích cổ phiếu VN30/thị trường Việt Nam qua vn-market-mcp: định tuyến câu hỏi của người dùng vào đúng tool MCP (run_analysis, get_snapshot, query_history, explain_run, list_predictions, get_stats, set_position, clear_position), không tự tính số, không đặt lệnh."
+description: "Phân tích cổ phiếu VN30/thị trường Việt Nam qua vn-market-mcp: định tuyến câu hỏi của người dùng vào đúng tool MCP (run_analysis, get_snapshot, query_history, explain_run, list_predictions, get_stats, set_position, clear_position, watch_ticker, unwatch_ticker, list_watchlist), không tự tính số, không đặt lệnh."
 version: 0.1.0
 author: vn-trading-agent project
 license: MIT
@@ -46,6 +46,11 @@ Bạn đang hỗ trợ người dùng nghiên cứu cổ phiếu thị trường
 | "so sánh <mã A> với <mã B>" | Gọi `run_analysis` cho cả hai mã với cùng `depth`, trình bày cạnh nhau |
 | `/dangiu <mã> [giá vốn]`, "tôi đang giữ <mã>", "tôi mua <mã> giá X" | **Xác nhận lại với người dùng** mã + giá vốn (nếu có) trước khi gọi, rồi gọi `set_position(ticker=<mã>, avg_cost=<giá vốn hoặc null>, declared_by=<id người dùng trong ngữ cảnh chat>)` |
 | "tôi đã bán <mã>", "thoát vị thế <mã>", "không còn giữ <mã> nữa" | **Xác nhận lại với người dùng** trước khi gọi, rồi gọi `clear_position(ticker=<mã>, declared_by=<id người dùng trong ngữ cảnh chat>)` |
+| `/theodoi <mã>`, "theo dõi <mã>", "thêm <mã> vào danh sách của tôi" | Gọi `watch_ticker(ticker=<mã>, declared_by=<id người dùng trong ngữ cảnh chat>)`. Báo lại tên, sàn, và rằng mã sẽ được phân tích tự động mỗi phiên; nếu `status="not_found"` đọc nguyên văn `warnings` |
+| `/bodoi <mã>`, "bỏ theo dõi <mã>" | Gọi `unwatch_ticker(ticker=<mã>, declared_by=<id người dùng>)` |
+| `/danhsach`, "danh sách theo dõi của tôi", "các mã tôi theo dõi hôm nay thế nào" | Gọi `list_watchlist(declared_by=<id người dùng>)`; mã có `action_label` rỗng → nói "chưa có nhận định", gọi `get_snapshot(ticker=<mã>)` nếu người dùng hỏi lý do |
+
+`declared_by` luôn là id của chính người đang nhắn — danh sách theo dõi là riêng từng người, không đọc/sửa danh sách của người khác. Khác `set_position`, theo dõi một mã không cần xác nhận lại (không ảnh hưởng nhãn hành động).
 
 Nếu người dùng nêu một mã không nằm trong VN30, cứ định tuyến bình thường — `run_analysis`/`get_snapshot` tự trả về cảnh báo độ phủ dữ liệu (`universe_tier`) trong `warnings` nếu có; đọc nguyên văn cảnh báo đó lại cho người dùng, không tự phán mã đó "không đủ tin cậy" khi tool không nói vậy.
 

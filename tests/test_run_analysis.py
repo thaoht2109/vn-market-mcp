@@ -74,8 +74,13 @@ class _StubProvider:
     def __init__(self, latest_day, latest_close):
         self.latest_day = latest_day
         self.latest_close = latest_close
+        self.ohlcv_starts = []
+
+    def lookup_listing(self, ticker):
+        return None
 
     def get_ohlcv(self, ticker, start, end):
+        self.ohlcv_starts.append(start)
         return [
             PriceBar(
                 ticker=ticker, trade_date=self.latest_day, open=self.latest_close,
@@ -235,11 +240,30 @@ def test_run_analysis_rerun_with_unchanged_label_does_not_duplicate_prediction(d
 def test_run_analysis_unknown_ticker_is_rejected(db_conn, tmp_path):
     runs_before = db_conn.execute("SELECT count(*) FROM runs").fetchone()[0]
 
-    result = run_analysis(db_conn, object(), "NOTATICKER", tmp_path)
+    result = run_analysis(db_conn, _StubProvider(None, None), "NOTATICKER", tmp_path)
     assert result.status == "unknown_ticker"
     assert result.run_id is None
 
     assert db_conn.execute("SELECT count(*) FROM runs").fetchone()[0] == runs_before
+
+
+def test_run_analysis_backfills_history_for_a_short_history_ticker(db_conn, tmp_path):
+    latest_day, latest_close = _seed_env(db_conn, "SHORTHIST", history_days=30, vn30_member=False)
+    provider = _StubProvider(latest_day, latest_close)
+
+    run_analysis(db_conn, provider, "SHORTHIST", tmp_path)
+
+    assert provider.ohlcv_starts[0] <= latest_day - timedelta(days=3 * 365)
+
+
+def test_run_analysis_fills_gap_from_last_stored_bar(db_conn, tmp_path):
+    latest_day, latest_close = _seed_env(db_conn, "GAPHIST", vn30_member=False)
+    last_stored = db_conn.execute("SELECT max(trade_date) FROM prices_daily WHERE ticker = 'GAPHIST'").fetchone()[0]
+    provider = _StubProvider(latest_day, latest_close)
+
+    run_analysis(db_conn, provider, "GAPHIST", tmp_path)
+
+    assert provider.ohlcv_starts[0] == last_stored
 
 
 def test_run_analysis_flags_stale_calendar_not_reseeded_for_today(db_conn, tmp_path):

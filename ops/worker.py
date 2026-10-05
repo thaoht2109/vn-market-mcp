@@ -130,7 +130,9 @@ def run_one(conn) -> bool:
         mark_failed(conn, job, f"{result.status}: {result.message}")
         release(conn, job)
         log_event("worker_job_finished", job_key=job.job_key, ticker=job.ticker, status=result.status)
-        send_ops_alert(f"[{job.ticker}] {result.status}: {result.message}")
+        # A watched small cap fails coverage every scheduled run; that's expected, not an incident.
+        if job.job_type == "on_demand" or result.status != "insufficient_coverage":
+            send_ops_alert(f"[{job.ticker}] {result.status}: {result.message}")
     return True
 
 

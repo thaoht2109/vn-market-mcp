@@ -36,6 +36,24 @@ def resolve_ticker(conn: psycopg.Connection, raw_input: str) -> TickerMatch:
     raise UnknownTickerError(raw_input, [c[0] for c in candidates])
 
 
+def resolve_or_register_ticker(conn: psycopg.Connection, provider, raw_input: str) -> TickerMatch:
+    """resolve_ticker, but a ticker missing from `tickers` (only VN30 is seeded) that
+    vnstock lists is registered on the spot, so any listed ticker can be analysed."""
+    try:
+        return resolve_ticker(conn, raw_input)
+    except UnknownTickerError:
+        ticker = raw_input.strip().upper()
+        listed = provider.lookup_listing(ticker)
+        if listed is None:
+            raise
+    name, exchange = listed
+    conn.execute(
+        "INSERT INTO tickers (ticker, name, exchange) VALUES (%s, %s, %s) ON CONFLICT (ticker) DO NOTHING",
+        (ticker, name, exchange),
+    )
+    return TickerMatch(ticker=ticker, name=name, exchange=exchange)
+
+
 def classify_universe_tier(conn: psycopg.Connection, ticker: str) -> Literal["A", "B"]:
     row = conn.execute(
         """
