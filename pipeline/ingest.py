@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
 import psycopg
 
+from pipeline.news_health import VNSTOCK_NEWS_SOURCE, record_failure, record_ok
 from providers.vnstock_provider import (
     CorporateEvent,
     ForeignFlowRecord,
@@ -259,20 +260,24 @@ NEWS_PAUSE_AFTER_FAILURE_S = 600.0
 
 def ingest_news(conn: psycopg.Connection, provider, ticker: str, start: date, end: date) -> int:
     """Store raw headlines (no LLM) so the chat model can read them. Best effort: a flaky news
-    API, or an item whose month has no partition yet, never fails the analysis run."""
+    API, or an item whose month has no partition yet, never fails the analysis run — but it is
+    recorded in source_health (source 'vnstock_news'), so a dead feed shows up in ops alerts
+    instead of vanishing."""
     import hashlib
 
     global _news_pause_until
     if time.monotonic() < _news_pause_until:
         return 0
+    now = datetime.now(timezone.utc)
     try:
         items = provider.get_news(ticker, start, end)
-    except Exception:
+    except Exception as exc:
         # iq.vietcap.com.vn times out in 30 s x retries when saturated; stop hammering it for a while
         # instead of paying that per ticker for the rest of the batch.
         _news_pause_until = time.monotonic() + NEWS_PAUSE_AFTER_FAILURE_S
+        record_failure(conn, VNSTOCK_NEWS_SOURCE, f"{type(exc).__name__}: {exc}", now)
         return 0
-    stored = 0
+    stored, db_error = 0, None
     for it in items:
         key = it.url or f"{it.title}|{it.published_at.date()}"
         try:
@@ -289,6 +294,10 @@ def ingest_news(conn: psycopg.Connection, provider, ticker: str, start: date, en
                      it.title, it.summary, it.fetched_at),
                 ).fetchone()
             stored += 1 if row else 0
-        except psycopg.Error:
-            continue
+        except psycopg.Error as exc:
+            db_error = exc
+    if db_error is not None:
+        record_failure(conn, VNSTOCK_NEWS_SOURCE, f"insert failed: {db_error}", now)
+    else:
+        record_ok(conn, VNSTOCK_NEWS_SOURCE, max((i.published_at for i in items), default=None), now)
     return stored

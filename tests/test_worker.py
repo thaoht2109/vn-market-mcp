@@ -91,3 +91,24 @@ def test_only_ops_problems_reach_telegram(db_conn):
         db_conn.execute("DELETE FROM jobs WHERE ticker = 'WORKERMSG'")
         db_conn.execute("DELETE FROM tickers WHERE ticker = 'WORKERMSG'")
         db_conn.commit()
+
+
+def test_run_one_runs_collect_rss_without_run_analysis(db_conn):
+    from pipeline.jobs import COLLECT_RSS_JOB_TYPE
+
+    db_conn.execute("DELETE FROM jobs WHERE ticker = %s", (MACRO_TICKER,))
+    db_conn.commit()
+    job_key, _ = enqueue(db_conn, MACRO_TICKER, job_type=COLLECT_RSS_JOB_TYPE)
+    db_conn.commit()
+    try:
+        with patch("ops.worker.get_vn30_tickers", return_value=["FPT"]), \
+             patch("ops.worker.run_collect_rss", return_value={"ok": 1, "failed": 0, "stored": 2}) as collect, \
+             patch("ops.worker.run_analysis") as analysis:
+            assert run_one(db_conn) is True
+        collect.assert_called_once()
+        assert collect.call_args.kwargs["vn30"] == ["FPT"]
+        analysis.assert_not_called()
+        assert get_job(db_conn, job_key)["status"] == "done"
+    finally:
+        db_conn.execute("DELETE FROM jobs WHERE ticker = %s", (MACRO_TICKER,))
+        db_conn.commit()
