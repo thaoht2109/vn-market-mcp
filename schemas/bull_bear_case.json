@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["arguments", "key_risk_to_thesis"],
+  "properties": {
+    "arguments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "evidence_ref"],
+        "properties": {
+          "text": {"type": "string", "description": "Không chứa chữ số — số liệu chỉ qua placeholder {{field}}"},
+          "evidence_ref": {"type": "string", "description": "Đường dẫn trường dữ liệu trong snapshot"}
+        }
+      }
+    },
+    "key_risk_to_thesis": {"type": "string", "description": "Rủi ro lớn nhất cho lập luận của chính phe này, không chứa chữ số"}
+  }
+}

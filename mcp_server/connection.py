@@ -24,3 +24,16 @@ def get_rw_conn():
         raise
     finally:
         conn.close()
+
+
+@contextmanager
+def get_retention_conn():
+    conn = psycopg.connect(os.environ["RETENTION_JOB_DATABASE_URL"])
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

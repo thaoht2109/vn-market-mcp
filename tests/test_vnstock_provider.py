@@ -225,7 +225,7 @@ def test_get_foreign_flow_reads_kbs_price_board_snapshot():
             }
         ]
     )
-    provider = VNStockProvider(source="VCI", clients={"trading": _FakeTrading(df)}, scale_map={"VCI": 1})
+    provider = VNStockProvider(source="VCI", clients={"trading": _FakeTrading(df)}, scale_map={"VCI": 1000})
 
     records = provider.get_foreign_flow("FPT", date(2026, 9, 1), date(2026, 9, 30))
 
@@ -278,3 +278,14 @@ def test_get_news_falls_back_to_short_content_as_summary():
     items = provider.get_news("GAS", date(2026, 9, 1), date(2026, 9, 30))
 
     assert items[0].summary == "Tóm tắt ngắn"
+
+
+def test_normalize_fundamental_metrics_nulls_bank_only_zeros_and_nan():
+    from providers.vnstock_provider import _FUNDAMENTAL_METRIC_ALIASES, _normalize_fundamental_metrics
+
+    names = {v: k for k, v in _FUNDAMENTAL_METRIC_ALIASES.items()}
+    raw = {names["nim"]: 0.0, names["npl_ratio"]: 0, names["roe"]: 0.3, names["pe"]: float("nan"), names["pb"]: 0.0}
+    out = _normalize_fundamental_metrics(raw)
+    assert out["nim"] is None and out["npl_ratio"] is None  # vendor's 0 = not applicable
+    assert out["roe"] == 0.3 and out["pe"] is None
+    assert out["pb"] == 0.0  # only bank-only ratios are treated as not-applicable at 0

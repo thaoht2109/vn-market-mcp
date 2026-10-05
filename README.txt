@@ -187,6 +187,22 @@ NOT in this phase (by design — see the plan's roadmap for later phases):
   to the ops Telegram group (see section 12 below) so an operator
   notices without watching the terminal.
 
+  PREFER RUNNING THIS INSIDE THE WORKER CONTAINER, not from the host
+  venv directly — the host .env's DATABASE_URL points at
+  127.0.0.1:55432 (the published port), which has been observed to be
+  transiently unreachable for a moment while `docker compose up -d
+  worker`/`build worker` is recreating containers, firing a spurious
+  "LỖI khi chạy" ops alert for an error that had already resolved
+  itself. Inside the worker container, the same DB is reached via the
+  stable in-network address (postgres:5433), which isn't affected by
+  the host port being briefly unavailable:
+
+    docker compose exec worker python -m pipeline.run_analysis VNM
+
+  (pipeline/run_analysis.py's __main__ block also retries up to 3
+  times with backoff on psycopg.OperationalError before alerting, as a
+  second line of defense for whichever path you run it from.)
+
 
 7. BACKUP / RESTORE DRILL
 ----------------------------

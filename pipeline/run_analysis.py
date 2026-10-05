@@ -28,14 +28,17 @@ from pipeline.coverage import (
     gather_coverage_inputs,
     resolve_ticker,
 )
-from pipeline.fundamentals import fundamental_snapshot
+from pipeline.fundamentals import fundamental_snapshot, peer_metrics, valuation_component
 from pipeline.indicators import technical_snapshot
-from pipeline.ingest import IngestBatchError, assert_batch_ok, ingest_batch, ingest_fundamentals_and_flow
+from pipeline.ingest import IngestBatchError, assert_batch_ok, ingest_batch, ingest_fundamentals_and_flow, ingest_news
 from pipeline.positions import get_holding_state
-from pipeline.regime import get_market_regime
+from pipeline.llm_gate import llm_pipeline_enabled
+from pipeline.regime import get_market_context
 from pipeline.report import render_synthesis_report
 from pipeline.risk_plan import RiskPlanConfig, risk_plan
-from pipeline.scoring import agreement_ratio, composite_score, confidence, percentile_score
+from pipeline.scoring import (
+    agreement_ratio, composite_score, confidence, flow_score, percentile_score, technical_score,
+)
 from pipeline.snapshot import serialize_snapshot, write_snapshot
 from providers.vnstock_provider import FundamentalRecord
 from quality.checks import (
@@ -89,6 +92,17 @@ def _upsert_prediction(
 ) -> tuple[int | None, str]:
     if label is None:
         return None, "none"
+
+    # one_open_prediction is unique per (ticker, label, thesis), so an older open
+    # row with this same label (e.g. watch -> stay_out -> watch) blocks a new
+    # INSERT even though it isn't the newest open row: reuse it.
+    same_label = conn.execute(
+        "SELECT id FROM predictions WHERE ticker = %s AND action_label = %s"
+        " AND status = 'open' AND COALESCE(thesis_id, 0) = 0",
+        (ticker, label),
+    ).fetchone()
+    if same_label is not None:
+        return same_label[0], "unchanged"
 
     existing = _existing_open_prediction(conn, ticker)
     if existing is not None:
@@ -243,7 +257,8 @@ def run_analysis(
     industry_group = ticker_row[0] if ticker_row and ticker_row[0] else "other"
 
     fundamentals_rows = conn.execute(
-        "SELECT period, metrics FROM fundamentals_quarterly WHERE ticker = %s ORDER BY period DESC LIMIT 8",
+        "SELECT period, metrics FROM fundamentals_quarterly WHERE ticker = %s"
+        " AND period ~ '^[0-9]{4}-?Q[1-4]$' ORDER BY period DESC LIMIT 8",
         (ticker,),
     ).fetchall()
     fundamentals_records = [
@@ -267,18 +282,18 @@ def run_analysis(
         )
     tech = technical_snapshot(df)
 
-    close_history = df["close"].tolist()[:-1]
-    technical_component = percentile_score(close_history, today_close)
+    technical_component = technical_score(today_close, tech)
 
-    roe_history = [r.metrics.get("roe") for r in fundamentals_records[1:] if r.metrics.get("roe") is not None]
-    current_roe = fund.metrics.get("roe")
-    fundamental_component = percentile_score(roe_history, current_roe) if current_roe is not None else None
+    fundamental_component = valuation_component(
+        fund.metrics, [r.metrics for r in fundamentals_records[1:]], peer_metrics(conn, ticker, industry_group),
+    )
 
     flow_rows = conn.execute(
-        "SELECT net_value FROM foreign_flow_daily WHERE ticker = %s ORDER BY trade_date", (ticker,)
+        "SELECT f.net_value, p.value FROM foreign_flow_daily f"
+        " JOIN prices_daily p USING (ticker, trade_date)"
+        " WHERE f.ticker = %s ORDER BY f.trade_date DESC LIMIT 5", (ticker,),
     ).fetchall()
-    flow_values = [r[0] for r in flow_rows if r[0] is not None]
-    flow_component = percentile_score(flow_values[:-1], flow_values[-1]) if len(flow_values) >= 2 else None
+    flow_component = flow_score(flow_rows)
 
     pb_history = [r.metrics.get("pb") for r in fundamentals_records[1:] if r.metrics.get("pb") is not None]
     current_pb = fund.metrics.get("pb")
@@ -317,6 +332,7 @@ def run_analysis(
     warnings.extend(plan.warnings)
 
     label_cfg = ActionLabelConfig.from_rules(rules)
+    market = get_market_context(conn, provider, trading_date, now)
     label_input = ActionLabelInput(
         coverage_insufficient=False,
         gate_blocked=False,
@@ -329,13 +345,14 @@ def run_analysis(
         # B's confidence was already capped above, so the normal
         # buy_min_confidence gate in action_label() does the filtering.
         buy_allowed=True,
-        regime=get_market_regime(provider, trading_date),
+        regime=market["regime"],
         agreeing_sources=agreeing,
         rr=plan.rr,
         valuation_percentile=valuation_percentile,
     )
     label = action_label(label_input, label_cfg)
 
+    snapshot["market"] = market
     snapshot["technical"] = tech
     snapshot["fundamental"] = fund
     snapshot["risk_plan"] = plan
@@ -358,13 +375,17 @@ def run_analysis(
         (run_id, mode, [ticker], style, depth, now, snapshot_ref, json.dumps(warnings)),
     )
 
+    # Twice a day is enough for headlines (pre = overnight, post = the session); weekly runs minutes after post.
+    if mode in ("scheduled_pre", "scheduled_post"):
+        ingest_news(conn, provider, ticker, trading_date - timedelta(days=7), trading_date)
+
     # LLM roles (spec §5.7.3) run for the post-session cron report and the
     # weekly deep-dive (spec §4.2, synthesis_full role) — on_demand/
     # scheduled_pre stay fast and free of LLM cost/latency. A
     # failed call for any one role just means the report ships without that
     # extra narrative, never blocks the deterministic pipeline (spec §9
     # "nhãn hành động do code sinh").
-    if mode in ("scheduled_post", "scheduled_weekly") and label is not None:
+    if mode in ("scheduled_post", "scheduled_weekly") and label is not None and llm_pipeline_enabled():
         llm_cfg = ModelsConfig.load()
         # evidence_ref validation walks the snapshot as plain dicts — pass
         # the same serialized shape that ends up in the JSON file, not the

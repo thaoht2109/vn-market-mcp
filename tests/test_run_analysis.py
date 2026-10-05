@@ -10,7 +10,7 @@ import psycopg
 import pytest
 
 from llm.providers import ChatResult
-from pipeline.calendar import seed_calendar_from_weekdays
+from pipeline.calendar import latest_trading_day, seed_calendar_from_weekdays
 from pipeline.run_analysis import RunResult, _run_with_retry, run_analysis
 from providers.vnstock_provider import ForeignFlowRecord, FundamentalRecord, PriceBar
 from tests.conftest import insert_ticker
@@ -281,7 +281,32 @@ class _FakeSynthesisClient:
         return ChatResult(tool_input=output, input_tokens=100, output_tokens=50, cached_tokens=0)
 
 
-def test_run_analysis_scheduled_post_calls_synthesis_and_stores_it(db_conn, tmp_path):
+@pytest.fixture
+def llm_on(monkeypatch):
+    """The pipeline LLM roles are off by default (config llm.pipeline_enabled=false)."""
+    monkeypatch.setattr("pipeline.run_analysis.llm_pipeline_enabled", lambda: True)
+
+
+def test_run_analysis_scheduled_post_runs_no_llm_by_default(db_conn, tmp_path):
+    latest_day, latest_close = _seed_env(db_conn, "VNMTEST")
+    calls = []
+
+    class _Boom:
+        def complete(self, *a, **k):
+            calls.append(1)
+            raise AssertionError("no LLM may run inside the pipeline")
+
+    result = run_analysis(db_conn, _StubProvider(latest_day, latest_close), "VNMTEST", tmp_path,
+                          mode="scheduled_post", llm_clients={"deepseek": _Boom()})
+
+    assert result.status == "ok" and calls == [] and result.report_text is None
+    snapshot_ref = db_conn.execute("SELECT snapshot_ref FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
+    snapshot = json.loads(Path(snapshot_ref).read_text())
+    assert not {"synthesis", "debate", "news"} & snapshot.keys()
+    assert db_conn.execute("SELECT count(*) FROM llm_calls WHERE run_id = %s", (result.run_id,)).fetchone()[0] == 0
+
+
+def test_run_analysis_scheduled_post_calls_synthesis_and_stores_it(db_conn, tmp_path, llm_on):
     latest_day, latest_close = _seed_env(db_conn, "VNMTEST")
     provider = _StubProvider(latest_day, latest_close)
     synthesis_output = {
@@ -309,7 +334,7 @@ def test_run_analysis_scheduled_post_calls_synthesis_and_stores_it(db_conn, tmp_
     assert snapshot["news"] == []
 
 
-def test_run_analysis_scheduled_post_skips_bull_bear_for_stay_out_label(db_conn, tmp_path):
+def test_run_analysis_scheduled_post_skips_bull_bear_for_stay_out_label(db_conn, tmp_path, llm_on):
     # Bull/Bear/Verifier cost real LLM calls per spec §5.7.2 ("chỉ cho mã lọt
     # lưới") — a stay_out label (e.g. data_stale gate) has nothing worth
     # debating, so the pipeline must skip them and go straight to Synthesis.
@@ -334,7 +359,7 @@ def test_run_analysis_scheduled_post_skips_bull_bear_for_stay_out_label(db_conn,
     assert snapshot["news"] == []  # news digest still runs regardless of label
 
 
-def test_run_analysis_scheduled_post_applies_downgrade_recommendation(db_conn, tmp_path):
+def test_run_analysis_scheduled_post_applies_downgrade_recommendation(db_conn, tmp_path, llm_on):
     latest_day, latest_close = _seed_env(db_conn, "VNMTEST")
     provider = _StubProvider(latest_day, latest_close)
     synthesis_output = {
@@ -378,11 +403,7 @@ def test_run_analysis_insufficient_coverage_writes_run_but_no_prediction(db_conn
     insert_ticker(db_conn, "ABC")
     today = datetime.now(timezone.utc).date()
     seed_calendar_from_weekdays(db_conn, today - timedelta(days=10), today, holidays=set())
-    trading_day = db_conn.execute(
-        "SELECT trade_date FROM trading_calendar WHERE is_trading_day = true AND trade_date <= %s"
-        " ORDER BY trade_date DESC LIMIT 1",
-        (today,),
-    ).fetchone()[0]
+    trading_day = latest_trading_day(db_conn, datetime.now(timezone.utc))
 
     class _ThinProvider:
         def get_ohlcv(self, ticker, start, end):
@@ -468,3 +489,23 @@ def test_run_analysis_tier_b_confidence_is_capped_not_buy_blocked(db_conn, tmp_p
     universe_tier, confidence_value = row
     assert universe_tier == "B"
     assert float(confidence_value) <= 0.6  # config/vn-rules.yaml tier_b.confidence_cap
+
+
+def test_upsert_prediction_reuses_older_open_row_with_same_label(db_conn):
+    from pipeline.run_analysis import _upsert_prediction
+
+    insert_ticker(db_conn, "VNMFLIP")
+    for run_id in ("r1", "r2", "r3"):
+        db_conn.execute(
+            "INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref)"
+            " VALUES (%s, 'scheduled_pre', ARRAY['VNMFLIP'], 'long', 'quick', now(), 'x')", (run_id,)
+        )
+    args = dict(universe_tier="vn30", holding_state="none", coverage_detail={}, entry_zone=(1.0, 2.0),
+                stop_loss=0.5, target=3.0, confidence_value=0.5, refresh_horizon_days=20)
+
+    watch_id, _ = _upsert_prediction(db_conn, "r1", "VNMFLIP", "watch", **args)
+    stay_id, trig = _upsert_prediction(db_conn, "r2", "VNMFLIP", "stay_out", **args)
+    assert trig == "label_change" and stay_id != watch_id
+    # label flips back to watch while the older watch row is still open: no duplicate-key crash
+    again_id, trig = _upsert_prediction(db_conn, "r3", "VNMFLIP", "watch", **args)
+    assert (again_id, trig) == (watch_id, "unchanged")

@@ -1,0 +1,47 @@
+version: 1
+provider: anthropic
+
+# DeepSeek is primary for this phase (cost optimization — user decision,
+# 2026-10-01): deepseek-chat is ~10x cheaper per token than Sonnet and its
+# prompt caching is automatic server-side (no cache_control blocks needed,
+# unlike Anthropic). Claude models are kept as fallback for when
+# DEEPSEEK_API_KEY is absent or a DeepSeek call fails — llm/providers.py
+# skips any model whose provider has no configured key.
+models:
+  deepseek:  {id: deepseek-chat, provider: deepseek, usd_per_mtok: {in: 0.27, out: 1.1, cache_read: 0.07}, price_checked: 2026-10-01}
+  sonnet: {id: claude-sonnet-5, provider: anthropic, usd_per_mtok: {in: 3, out: 15, cache_read: 0.3}, price_checked: 2026-10-01}
+  opus:   {id: claude-opus-4-8,  provider: anthropic, usd_per_mtok: {in: 5, out: 25, cache_read: 0.5}, price_checked: 2026-10-01}
+  haiku:  {id: claude-haiku-4-5-20251001, provider: anthropic, usd_per_mtok: {in: 1, out: 5, cache_read: 0.1}, price_checked: 2026-10-01}
+  gpt:       {id: gpt-4.1,          provider: openai,   usd_per_mtok: {in: 2, out: 8},   price_checked: 2026-10-01}
+  grok:      {id: grok-4,           provider: grok,      usd_per_mtok: {in: 3, out: 15},  price_checked: 2026-10-01}
+
+# Phase 5 minimum-viable slice: only synthesis_daily is wired to a real tool
+# handler for now (llm/synthesis.py). Other roles from plan §5.7.2 are
+# declared so config/schema validation and cost math are ready, but have no
+# caller yet — add their handlers the same way when needed.
+roles:
+  synthesis_daily:
+    model: deepseek
+    effort: medium
+    mode: batch
+    output_schema: schemas/synthesis_daily.json
+    prompt_version: synth-v1
+    tools: []
+    fallback: [sonnet, gpt, grok, haiku]
+  news_digest:      {model: deepseek, effort: low,    mode: batch, output_schema: schemas/news_digest.json, prompt_version: news-v1,  tools: [], fallback: [sonnet, gpt, haiku]}
+  macro_daily:      {model: deepseek, effort: medium, mode: sync,  output_schema: schemas/macro.json,       prompt_version: macro-v1, tools: [], fallback: [sonnet, gpt]}
+  macro_weekly:     {model: deepseek, effort: high,   mode: batch, output_schema: schemas/macro.json,       prompt_version: macro-v1, tools: [], fallback: [opus, gpt, grok]}
+  synthesis_full:   {model: deepseek, effort: high,   mode: sync,  output_schema: schemas/synthesis_daily.json, prompt_version: synth-v1, tools: [], fallback: [opus, gpt, grok]}
+  bull_advocate:    {model: deepseek, effort: high,   mode: sync,  output_schema: schemas/bull_bear_case.json, prompt_version: bull-v1,   tools: [], fallback: [sonnet, gpt, grok]}
+  bear_advocate:    {model: deepseek, effort: high,   mode: sync,  output_schema: schemas/bull_bear_case.json, prompt_version: bear-v1,   tools: [], fallback: [sonnet, gpt, grok]}
+  verifier_logic:   {model: deepseek, effort: low,    mode: sync,  output_schema: schemas/verifier_logic.json, prompt_version: verify-v1, tools: [], fallback: [sonnet, gpt]}
+
+limits:
+  max_cost_usd_per_run: 1.0
+  daily_budget_usd: 10
+  alert_at_pct: 80
+  request_timeout_s: 120
+
+validation:
+  require_roles: [synthesis_daily]
+  forbid_params: [temperature, top_p, top_k, assistant_prefill, thinking_budget, forced_tool_choice]

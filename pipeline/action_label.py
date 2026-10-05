@@ -24,6 +24,7 @@ class ActionLabelInput:
 class ActionLabelConfig:
     min_confidence_floor: float
     buy_min_score: float
+    buy_min_confidence: float
     buy_min_agreeing_sources: int
     buy_min_rr: float
     buy_max_valuation_percentile: float
@@ -36,6 +37,7 @@ class ActionLabelConfig:
         return cls(
             min_confidence_floor=al["min_confidence_floor"],
             buy_min_score=al["buy_accumulate"]["min_score"],
+            buy_min_confidence=al["buy_accumulate"]["min_confidence"],
             buy_min_agreeing_sources=al["buy_accumulate"]["min_agreeing_sources"],
             buy_min_rr=al["buy_accumulate"]["min_rr"],
             buy_max_valuation_percentile=al["buy_accumulate"]["max_valuation_percentile"],
@@ -57,6 +59,7 @@ def action_label(inp: ActionLabelInput, cfg: ActionLabelConfig) -> str | None:
         inp.buy_allowed
         and inp.regime != "risk_off"
         and inp.score >= cfg.buy_min_score
+        and inp.confidence >= cfg.buy_min_confidence
         and inp.agreeing_sources >= cfg.buy_min_agreeing_sources
         and inp.rr >= cfg.buy_min_rr
         and inp.valuation_percentile <= cfg.buy_max_valuation_percentile

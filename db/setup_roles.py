@@ -14,7 +14,12 @@ _GRANTS = {
         "GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO pipeline_rw;"
         "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO pipeline_rw;"
     ),
-    "retention_job": "GRANT SELECT, DELETE ON ALL TABLES IN SCHEMA public TO retention_job;",
+    "retention_job": (
+        "GRANT SELECT, DELETE ON ALL TABLES IN SCHEMA public TO retention_job;"
+        # retention_job writes its own audit trail into retention_log (spec §7.4 step "ghi retention_log").
+        "GRANT INSERT ON retention_log TO retention_job;"
+        "GRANT USAGE, SELECT ON SEQUENCE retention_log_id_seq TO retention_job;"
+    ),
 }
 
 

@@ -1,6 +1,6 @@
 ---
 name: vn-stock-analyze
-description: "Phân tích cổ phiếu VN30/thị trường Việt Nam qua vn-market-mcp: định tuyến câu hỏi của người dùng vào đúng tool MCP (run_analysis, get_snapshot, query_history, explain_run, list_predictions, get_stats), không tự tính số, không đặt lệnh."
+description: "Phân tích cổ phiếu VN30/thị trường Việt Nam qua vn-market-mcp: định tuyến câu hỏi của người dùng vào đúng tool MCP (run_analysis, get_snapshot, query_history, explain_run, list_predictions, get_stats, set_position, clear_position), không tự tính số, không đặt lệnh."
 version: 0.1.0
 author: vn-trading-agent project
 license: MIT
@@ -26,6 +26,7 @@ Bạn đang hỗ trợ người dùng nghiên cứu cổ phiếu thị trường
 7. **Nhãn hành động (`action_label`) do pipeline sinh ra (code, không phải LLM) phải được giữ nguyên.** Bạn chỉ được đề nghị một nhãn THẬN TRỌNG HƠN nếu có lý do, không bao giờ được tự nâng nhãn lên tích cực hơn những gì tool trả về.
 8. **Câu hỏi dẫn dắt không được đổi kết luận.** "HPG chắc chắn tăng đúng không?" và "HPG có rủi ro gì không?" về cùng một `run_id`/snapshot phải cho ra cùng một nhận định nền tảng — chỉ khác cách trình bày, không khác verdict.
 9. **Khi tool trả về `status: "not_found"`, lỗi, hoặc envelope có `warnings` không rỗng**, phải trả lời đúng những gì tool nói (ví dụ: "mã XYZ chưa có đủ dữ liệu lịch sử" hoặc "chưa có run nào cho mã này") — không tự suy diễn hoặc bịa câu trả lời nghe hợp lý.
+10. **`set_position`/`clear_position` chỉ được gọi khi người dùng tự khai rõ ràng**, không bao giờ tự suy luận trạng thái nắm giữ từ các câu hỏi khác (vd. hỏi về một mã không có nghĩa là đang giữ mã đó). Luôn xác nhận lại (mã, giá vốn nếu có) trước khi gọi — đây là thao tác ghi dữ liệu, sai sẽ làm lệch `holding_state` dùng để tính nhãn hành động ở các lần phân tích sau.
 
 ## Không phải lệnh Telegram/CLI thật
 
@@ -43,6 +44,8 @@ Bạn đang hỗ trợ người dùng nghiên cứu cổ phiếu thị trường
 | "các dự báo còn mở", "dự báo <mã> gần đây", "danh sách prediction" | Gọi `list_predictions(ticker=<mã hoặc bỏ trống>, status=<nếu người dùng nêu>)` |
 | `/trangthai`, "trạng thái hệ thống", "thống kê tổng"/"hit-rate" | Gọi `get_stats()` |
 | "so sánh <mã A> với <mã B>" | Gọi `run_analysis` cho cả hai mã với cùng `depth`, trình bày cạnh nhau |
+| `/dangiu <mã> [giá vốn]`, "tôi đang giữ <mã>", "tôi mua <mã> giá X" | **Xác nhận lại với người dùng** mã + giá vốn (nếu có) trước khi gọi, rồi gọi `set_position(ticker=<mã>, avg_cost=<giá vốn hoặc null>, declared_by=<id người dùng trong ngữ cảnh chat>)` |
+| "tôi đã bán <mã>", "thoát vị thế <mã>", "không còn giữ <mã> nữa" | **Xác nhận lại với người dùng** trước khi gọi, rồi gọi `clear_position(ticker=<mã>, declared_by=<id người dùng trong ngữ cảnh chat>)` |
 
 Nếu người dùng nêu một mã không nằm trong VN30, cứ định tuyến bình thường — `run_analysis`/`get_snapshot` tự trả về cảnh báo độ phủ dữ liệu (`universe_tier`) trong `warnings` nếu có; đọc nguyên văn cảnh báo đó lại cho người dùng, không tự phán mã đó "không đủ tin cậy" khi tool không nói vậy.
 
@@ -53,3 +56,4 @@ Nếu người dùng nêu một mã không nằm trong VN30, cứ định tuyế
 - Nếu tool trả `warnings` không rỗng, luôn hiển thị nguyên văn (không rút gọn tới mức mất ý).
 - Trả lời có tính hành động: nêu nhãn hành động (giữ nguyên như tool trả), vùng giá/cắt lỗ nếu có trong `data`, điều kiện vô hiệu hóa, rồi dòng miễn trừ.
 - Không lặp lại toàn bộ JSON thô trừ khi người dùng yêu cầu xem dữ liệu gốc.
+- Sau `set_position`/`clear_position`: xác nhận ngắn gọn `holding_state` mới mà tool trả về (vd. "Đã ghi nhận bạn đang giữ HPG" / "Đã ghi nhận bạn đã thoát HPG"), không thêm nhận định phân tích trừ khi người dùng hỏi thêm.

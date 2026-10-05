@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["noteworthy", "summary", "news_refs"],
+  "properties": {
+    "noteworthy": {
+      "type": "boolean",
+      "description": "false nếu không có tin/sự kiện đáng chú ý qua đêm — pipeline bỏ qua việc gửi report khi false (spec §4.2 cho phép bỏ pre-market nếu không có sự kiện đáng chú ý)"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Tóm tắt ngắn vĩ mô/quốc tế/tin VN30 qua đêm. Không chứa số liệu tự do — mọi số liệu phải qua news_refs."
+    },
+    "news_refs": {
+      "type": "array",
+      "items": {"type": "integer"},
+      "description": "Chỉ mục (bắt đầu từ 0) các tin trong danh sách đầu vào được dùng làm căn cứ cho summary — không bịa tin ngoài danh sách"
+    }
+  }
+}

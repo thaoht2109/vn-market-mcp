@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import psycopg
+
+_VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 class NoCalendarDataError(Exception):
@@ -46,17 +49,27 @@ def is_trading_day(conn: psycopg.Connection, d: date) -> bool:
     return row[0]
 
 
+# First continuous-matching tick (09:00 ATO + 15 min): before it, today's
+# session has no bar yet. Real 2026-10-05 incident: an 08:32 Monday run picked
+# today, vnstock returned only Sep 30..Oct 2, and completeness failed.
+# ponytail: mirrors vn-rules.yaml trading_hours.morning_start; pass it in if it ever changes.
+_FIRST_BAR_TIME = time(9, 15)
+
+
 def latest_trading_day(conn: psycopg.Connection, as_of: datetime) -> date:
+    """Latest trading day that already has a bar as of `as_of` (VN time)."""
+    now_vn = as_of.astimezone(_VN_TZ)
+    cutoff = now_vn.date() if now_vn.time() >= _FIRST_BAR_TIME else now_vn.date() - timedelta(days=1)
     row = conn.execute(
         """
         SELECT trade_date FROM trading_calendar
         WHERE trade_date <= %s AND is_trading_day = true
         ORDER BY trade_date DESC LIMIT 1
         """,
-        (as_of.date(),),
+        (cutoff,),
     ).fetchone()
     if row is None:
-        raise NoCalendarDataError(f"no trading day found on or before {as_of.date()}")
+        raise NoCalendarDataError(f"no trading day found on or before {cutoff}")
     return row[0]
 
 
@@ -88,3 +101,38 @@ def next_trading_day(conn: psycopg.Connection, d: date) -> date:
     if row is None:
         raise NoCalendarDataError(f"no trading day found after {d}")
     return row[0]
+
+
+def is_trading_hours(conn: psycopg.Connection, now: datetime, trading_hours_cfg: dict) -> bool:
+    """§4.4: whether `now` falls inside continuous-trading session hours on a
+    trading day. Used to decide the cache-reuse window for chat requests
+    (30 min while trading, else reuse until next session) — not for any
+    settlement/grading logic, which only ever cares about calendar days."""
+    now_vn = now.astimezone(_VN_TZ)
+    if not is_trading_day(conn, now_vn.date()):
+        return False
+    t = now_vn.time()
+    morning = time.fromisoformat(trading_hours_cfg["morning_start"]) <= t <= time.fromisoformat(trading_hours_cfg["morning_end"])
+    afternoon = time.fromisoformat(trading_hours_cfg["afternoon_start"]) <= t <= time.fromisoformat(trading_hours_cfg["afternoon_end"])
+    return morning or afternoon
+
+
+def trading_day_offset(conn: psycopg.Connection, d: date, n: int) -> date | None:
+    """The n-th trading day strictly after d (n >= 1). None if fewer than n
+    trading days have elapsed since d yet (not gradeable now) — raises
+    NoCalendarDataError only if the calendar isn't seeded far enough to tell
+    the two cases apart (trading_calendar is seeded years ahead in practice,
+    see seed_calendar_from_weekdays callers, so this should be rare)."""
+    rows = conn.execute(
+        """
+        SELECT trade_date FROM trading_calendar
+        WHERE trade_date > %s AND is_trading_day = true
+        ORDER BY trade_date ASC LIMIT %s
+        """,
+        (d, n),
+    ).fetchall()
+    if len(rows) == n:
+        return rows[-1][0]
+    if not calendar_covers(conn, d):
+        raise NoCalendarDataError(f"no trading_calendar data after {d}")
+    return None

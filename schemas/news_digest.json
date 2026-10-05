@@ -1,0 +1,41 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["news_ref", "ticker", "event_type", "source_tier", "sentiment", "impact_horizon", "thesis_relevance", "confidence"],
+        "properties": {
+          "news_ref": {"type": "integer", "description": "Chỉ mục (số nguyên, bắt đầu từ 0) của tin trong danh sách đầu vào, dùng để truy ngược bằng chứng — không bịa tin ngoài danh sách"},
+          "ticker": {"type": "string"},
+          "event_type": {
+            "type": "string",
+            "enum": ["cbtt_chinh_thuc", "ket_qua_kinh_doanh", "co_tuc", "nhan_su", "hop_dong_du_an", "phap_ly", "khac", "no_info"]
+          },
+          "source_tier": {
+            "type": "string",
+            "enum": ["cbtt", "bao_chi", "mang_xa_hoi"],
+            "description": "Phân bậc nguồn: CBTT chính thức > báo chí > mạng xã hội (spec §5.7.3)"
+          },
+          "sentiment": {"type": "string", "enum": ["positive", "neutral", "negative", "no_info"]},
+          "impact_horizon": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["short_term", "medium_term", "long_term"],
+            "properties": {
+              "short_term": {"type": "string", "enum": ["positive", "neutral", "negative", "no_info"]},
+              "medium_term": {"type": "string", "enum": ["positive", "neutral", "negative", "no_info"]},
+              "long_term": {"type": "string", "enum": ["positive", "neutral", "negative", "no_info"]}
+            }
+          },
+          "thesis_relevance": {"type": "string", "description": "Tin này liên quan đến trụ cột/điều kiện vô hiệu hóa nào của luận điểm, hoặc 'khong_lien_quan'"},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    }
+  }
+}

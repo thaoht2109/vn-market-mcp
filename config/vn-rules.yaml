@@ -13,8 +13,16 @@ coverage:
   min_weight_coverage: 0.70
 
 tier_b:
+  # §10.5: nhóm B dùng thống kê chung của nhóm A (không chờ đủ mẫu chấm điểm
+  # riêng — plan ước tính ngưỡng 30 mẫu gần như không đạt được), chỉ ép trần
+  # confidence để action_labels.buy_accumulate.min_confidence tự lọc bớt.
   confidence_cap: 0.6
-  allow_buy_label_min_graded_samples: 30
+
+predictions:
+  # §14.6 chu kỳ làm mới dự báo: sau ngần này phiên, một prediction "open"
+  # được coi là cần re-run/refresh (không tự đóng, chỉ là mốc tham chiếu
+  # ghi vào predictions.horizon_days khi tạo).
+  refresh_horizon_days: 120
 
 action_labels:
   min_confidence_floor: 0.3
@@ -42,11 +50,44 @@ market_bands:
   HNX: 0.10
   UPCOM: 0.15
 
+# §4.4 giờ khớp lệnh liên tục (Asia/Ho_Chi_Minh), dùng chung cho mọi sàn —
+# đủ cho mục đích "đang giao dịch hay không" của cache snapshot; không cần
+# phân biệt ATO/ATC/nghỉ trưa chi tiết hơn ở đây.
+trading_hours:
+  morning_start: "09:00"
+  morning_end: "11:30"
+  afternoon_start: "13:00"
+  afternoon_end: "15:00"
+
+snapshot_cache:
+  # §4.4: ngưỡng tái sử dụng snapshot của cron cho yêu cầu chat, khi đang
+  # trong giờ giao dịch. Ngoài giờ, cache có hiệu lực đến phiên kế tiếp
+  # (không dùng max_age_minutes_off_hours — xử lý qua is_trading_hours()).
+  max_age_minutes: 360
+
 lot_size: 100
 
 price_unit_scale:
   # ponytail: hardcoded per-source scale factor, not a heuristic guesser.
-  # Verify against Task 0 Step 4 findings; upgrade to per-source auto-detect
-  # only if a second source is added with a different convention.
-  VCI: 1
+  # Verified against real vnstock.api.quote.Quote(source="VCI").history() data:
+  # it returns close in thousand-VND (e.g. FPT close=63.0 vs. Company.overview()
+  # current_price=63200.0 the same day) — scale must be 1000, not 1.
+  VCI: 1000
   TCBS: 1000
+
+grading:
+  # §10 horizons to grade each open prediction at, in trading sessions.
+  horizons_days: [20, 60, 120]
+  # §10.2 vùng vào: cửa sổ chờ giá chạm entry_zone trước khi ghi not_filled.
+  fill_window_days: 20
+  # §10.2 chi phí giao dịch: phí môi giới mỗi chiều + thuế bán 0.1% trên
+  # doanh thu bán (biểu phí phổ biến của CTCK trong nước, chỉnh theo thực tế).
+  buy_fee_pct: 0.0015
+  sell_fee_pct: 0.0015
+  sell_tax_pct: 0.001
+
+llm:
+  # false = no LLM inside the pipeline/worker: it only fetches vnstock data into Postgres and
+  # computes the deterministic indicators/label. Hermes (chat) is then the only LLM consumer,
+  # and only when a user asks. true = restore news digest, bull/bear/verifier, synthesis, macro digest.
+  pipeline_enabled: false

@@ -3,6 +3,7 @@ from pipeline.action_label import ActionLabelConfig, ActionLabelInput, action_la
 DEFAULT_CFG = ActionLabelConfig(
     min_confidence_floor=0.3,
     buy_min_score=70,
+    buy_min_confidence=0.6,
     buy_min_agreeing_sources=3,
     buy_min_rr=2.0,
     buy_max_valuation_percentile=70,
@@ -78,3 +79,10 @@ def test_risk_off_regime_blocks_buy_falls_to_watch():
 def test_score_below_watch_threshold_returns_stay_out():
     inp = _base_input(score=40, buy_allowed=False)
     assert action_label(inp, DEFAULT_CFG) == "stay_out"
+
+
+def test_confidence_below_buy_min_falls_through_to_watch():
+    # §10.5: this is the gate tier B's capped confidence must actually hit —
+    # previously min_confidence was declared in config but never checked.
+    inp = _base_input(confidence=0.5)
+    assert action_label(inp, DEFAULT_CFG) == "watch"

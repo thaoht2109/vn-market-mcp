@@ -1,64 +1,104 @@
-from pathlib import Path
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from mcp_server.tools.run_analysis import run_analysis_tool
-from pipeline.run_analysis import RunResult
+from pipeline.calendar import seed_calendar_from_weekdays
+from mcp_server.tools.run_analysis import _cache_is_fresh, get_job_status_tool, run_analysis_tool
+
+_RULES = {
+    "trading_hours": {
+        "morning_start": "09:00", "morning_end": "11:30",
+        "afternoon_start": "13:00", "afternoon_end": "15:00",
+    },
+    "snapshot_cache": {"max_age_minutes": 360},
+}
 
 
-def test_run_analysis_tool_returns_envelope_on_success(tmp_path):
-    fake_result = RunResult(
-        run_id="on_demand:VNM:123", status="ok", ticker="VNM",
-        action_label="watch", message="trigger=first",
-    )
+def test_run_analysis_tool_enqueues_and_returns_job_id():
+    # No prior run for this ticker (conn.execute(...).fetchone() -> None) —
+    # the §4.4 cache check must fall through cleanly to a fresh enqueue.
+    fake_conn = MagicMock()
+    fake_conn.execute.return_value.fetchone.return_value = None
+
     with patch("mcp_server.tools.run_analysis.get_rw_conn") as mock_conn, \
-         patch("mcp_server.tools.run_analysis.run_analysis", return_value=fake_result) as mock_run, \
-         patch("mcp_server.tools.run_analysis.log_event") as mock_log, \
-         patch("mcp_server.tools.run_analysis.VNStockProvider"):
-        mock_conn.return_value.__enter__.return_value = MagicMock()
+         patch("mcp_server.tools.run_analysis.enqueue", return_value=("on_demand:VNM:123", True)) as mock_enqueue, \
+         patch("mcp_server.tools.run_analysis.log_event") as mock_log:
+        mock_conn.return_value.__enter__.return_value = fake_conn
         result = run_analysis_tool("VNM", style="long", depth="quick")
 
-    assert result["data"]["status"] == "ok"
-    assert result["data"]["action_label"] == "watch"
+    assert result["data"]["job_id"] == "on_demand:VNM:123"
+    assert result["data"]["status"] == "queued"
+    assert result["data"]["ticker"] == "VNM"
+    assert result["sources"] == ["postgres"]
+    mock_enqueue.assert_called_once_with(
+        fake_conn, "VNM", job_type="on_demand", style="long", depth="quick", requested_by="mcp",
+    )
+    mock_log.assert_any_call(
+        "mcp_run_analysis_enqueued", ticker="VNM", job_key="on_demand:VNM:123", created=True
+    )
+
+
+def test_get_job_status_tool_returns_job_row():
+    fake_job = {"status": "done", "run_id": "on_demand:VNM:123", "error": None, "attempts": 1}
+    with patch("mcp_server.tools.run_analysis.get_rw_conn") as mock_conn, \
+         patch("mcp_server.tools.run_analysis.get_job", return_value=fake_job):
+        mock_conn.return_value.__enter__.return_value = MagicMock()
+        result = get_job_status_tool("on_demand:VNM:123")
+
+    assert result["data"]["status"] == "done"
     assert result["data"]["run_id"] == "on_demand:VNM:123"
-    assert result["sources"] == ["vnstock", "postgres"]
     assert result["warnings"] == []
-    mock_run.assert_called_once()
-    mock_log.assert_any_call("mcp_run_analysis_started", ticker="VNM", style="long", depth="quick")
-    mock_log.assert_any_call(
-        "mcp_run_analysis_finished", ticker="VNM", status="ok", action_label="watch"
-    )
 
 
-def test_run_analysis_tool_returns_warning_envelope_on_non_ok_status():
-    fake_result = RunResult(
-        run_id=None, status="unknown_ticker", ticker="ZZZ", action_label=None,
-        message="mã ZZZ không tồn tại",
-    )
+def test_get_job_status_tool_warns_when_not_found():
     with patch("mcp_server.tools.run_analysis.get_rw_conn") as mock_conn, \
-         patch("mcp_server.tools.run_analysis.run_analysis", return_value=fake_result), \
-         patch("mcp_server.tools.run_analysis.log_event"), \
-         patch("mcp_server.tools.run_analysis.send_ops_alert") as mock_alert, \
-         patch("mcp_server.tools.run_analysis.VNStockProvider"):
+         patch("mcp_server.tools.run_analysis.get_job", return_value=None):
         mock_conn.return_value.__enter__.return_value = MagicMock()
-        result = run_analysis_tool("ZZZ")
+        result = get_job_status_tool("missing:XYZ")
 
-    assert result["data"]["status"] == "unknown_ticker"
-    assert result["warnings"] == ["mã ZZZ không tồn tại"]
-    mock_alert.assert_called_once()
+    assert result["data"]["status"] == "not_found"
+    assert result["warnings"] == ["job_id không tồn tại"]
 
 
-def test_run_analysis_tool_catches_exception_and_alerts():
-    with patch("mcp_server.tools.run_analysis.get_rw_conn") as mock_conn, \
-         patch("mcp_server.tools.run_analysis.run_analysis", side_effect=RuntimeError("db down")), \
-         patch("mcp_server.tools.run_analysis.log_event") as mock_log, \
-         patch("mcp_server.tools.run_analysis.send_ops_alert") as mock_alert, \
-         patch("mcp_server.tools.run_analysis.VNStockProvider"):
-        mock_conn.return_value.__enter__.return_value = MagicMock()
-        result = run_analysis_tool("VNM")
+def test_cache_is_fresh_within_max_age_during_trading_hours(db_conn):
+    seed_calendar_from_weekdays(db_conn, date(2026, 8, 31), date(2026, 9, 4), holidays=set())
+    # 2026-09-02 10:00 Asia/Ho_Chi_Minh (UTC+7) == 03:00 UTC, a Wednesday, morning session.
+    now = datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)
+    run_as_of = now - timedelta(minutes=10)
+    assert _cache_is_fresh(db_conn, run_as_of, now, _RULES) is True
 
-    assert result["data"]["status"] == "error"
-    assert "db down" in result["warnings"][0]
-    mock_alert.assert_called_once()
-    mock_log.assert_any_call(
-        "mcp_run_analysis_failed", ticker="VNM", error="db down", error_type="RuntimeError"
-    )
+
+def test_cache_is_stale_beyond_max_age_during_trading_hours(db_conn):
+    seed_calendar_from_weekdays(db_conn, date(2026, 8, 31), date(2026, 9, 4), holidays=set())
+    now = datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)
+    run_as_of = now - timedelta(minutes=400)  # > 6 h max age
+    assert _cache_is_fresh(db_conn, run_as_of, now, _RULES) is False
+
+
+def test_cache_is_fresh_off_hours_until_next_session(db_conn):
+    seed_calendar_from_weekdays(db_conn, date(2026, 8, 31), date(2026, 9, 4), holidays=set())
+    # Run made right after Wednesday's close (2026-09-02); "now" is Wednesday
+    # night, still before Thursday's session opens.
+    run_as_of = datetime(2026, 9, 2, 8, 10, tzinfo=timezone.utc)  # 15:10 VN, just after close
+    now = datetime(2026, 9, 2, 16, 0, tzinfo=timezone.utc)  # 23:00 VN same day
+    assert _cache_is_fresh(db_conn, run_as_of, now, _RULES) is True
+
+
+def test_cache_is_stale_off_hours_after_next_session_opens(db_conn):
+    seed_calendar_from_weekdays(db_conn, date(2026, 8, 31), date(2026, 9, 4), holidays=set())
+    run_as_of = datetime(2026, 9, 2, 8, 10, tzinfo=timezone.utc)  # Wed close
+    now = datetime(2026, 9, 3, 3, 0, tzinfo=timezone.utc)  # Thu 10:00 VN — next session started
+    assert _cache_is_fresh(db_conn, run_as_of, now, _RULES) is False
+
+
+def test_cache_is_stale_off_hours_for_intraday_run(db_conn):
+    seed_calendar_from_weekdays(db_conn, date(2026, 8, 31), date(2026, 9, 4), holidays=set())
+    run_as_of = datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)  # Wed 10:00 VN — mid-session prices
+    now = datetime(2026, 9, 2, 13, 0, tzinfo=timezone.utc)  # Wed 20:00 VN
+    assert _cache_is_fresh(db_conn, run_as_of, now, _RULES) is False
+
+
+def test_cache_reuses_previous_close_run_before_first_bar(db_conn):
+    seed_calendar_from_weekdays(db_conn, date(2026, 8, 31), date(2026, 9, 4), holidays=set())
+    run_as_of = datetime(2026, 9, 2, 8, 20, tzinfo=timezone.utc)  # Wed 15:20 VN
+    now = datetime(2026, 9, 3, 2, 5, tzinfo=timezone.utc)  # Thu 09:05 VN, ATO — no bar yet
+    assert _cache_is_fresh(db_conn, run_as_of, now, _RULES) is True

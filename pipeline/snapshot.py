@@ -7,13 +7,13 @@ from pathlib import Path
 from typing import Any
 
 
-def _serialize(obj: Any) -> Any:
+def serialize_snapshot(obj: Any) -> Any:
     if is_dataclass(obj) and not isinstance(obj, type):
-        return {k: _serialize(v) for k, v in asdict(obj).items()}
+        return {k: serialize_snapshot(v) for k, v in asdict(obj).items()}
     if isinstance(obj, dict):
-        return {k: _serialize(v) for k, v in obj.items()}
+        return {k: serialize_snapshot(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [_serialize(v) for v in obj]
+        return [serialize_snapshot(v) for v in obj]
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
     return obj
@@ -23,5 +23,5 @@ def write_snapshot(snapshot_dir: Path, run_id: str, snapshot: dict) -> str:
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     safe_name = run_id.replace(":", "_")
     path = Path(snapshot_dir) / f"{safe_name}.json"
-    path.write_text(json.dumps(_serialize(snapshot), indent=2, ensure_ascii=False))
+    path.write_text(json.dumps(serialize_snapshot(snapshot), indent=2, ensure_ascii=False))
     return str(path)

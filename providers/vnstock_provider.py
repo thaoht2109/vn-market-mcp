@@ -58,12 +58,22 @@ _QUARTER_PERIOD = re.compile(r"\d{4}-Q[1-4]")
 _ALL_PERIODS = 100_000  # larger than any listing's quarter count
 
 
+# The VCI ratio report fills these with 0 for non-banks (VNM: nim 0.0, npl 0.0);
+# a real bank never has exactly 0, so 0 means "not applicable" — store None so
+# a report can't print "nợ xấu 0%" for a dairy company.
+_BANK_ONLY_METRICS = {"nim", "npl_ratio", "casa_ratio", "credit_growth"}
+
+
 def _normalize_fundamental_metrics(raw_metrics: dict[Any, Any]) -> dict[str, Any]:
-    return {
-        _FUNDAMENTAL_METRIC_ALIASES[key]: value
-        for key, value in raw_metrics.items()
-        if key in _FUNDAMENTAL_METRIC_ALIASES
-    }
+    out = {}
+    for key, value in raw_metrics.items():
+        name = _FUNDAMENTAL_METRIC_ALIASES.get(key)
+        if name is None:
+            continue
+        if pd.isna(value) or (name in _BANK_ONLY_METRICS and value == 0):
+            value = None
+        out[name] = value
+    return out
 
 
 def _to_date(value: Any) -> date:
@@ -267,7 +277,9 @@ class VNStockProvider:
         if board.empty:
             return []
         row = board.iloc[0]
-        close_price = normalize_price_unit(float(row["close_price"]), self.source, self.scale_map)
+        # KBS board prices are already full VND (MWG 72500, verified 2026-10-02);
+        # the per-source scale_map is for VCI history and would inflate this ×1000.
+        close_price = float(row["close_price"])
         buy_value = float(row["foreign_buy_volume"]) * close_price
         sell_value = float(row["foreign_sell_volume"]) * close_price
         room_left = row.get("foreign_room")

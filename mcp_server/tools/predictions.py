@@ -24,7 +24,16 @@ def list_predictions_tool(
     with get_ro_conn() as conn:
         rows = conn.execute(query, (ticker, status, limit)).fetchall()
 
-    predictions = [dict(zip(_COLUMNS, row)) for row in rows]
+    predictions = []
+    for row in rows:
+        pred = dict(zip(_COLUMNS, row))
+        # entry_zone is a Postgres numrange — psycopg returns it as a
+        # Range object, which the MCP SDK's JSON encoder can't serialize
+        # ("Unable to serialize unknown type"). [lower, upper] matches how
+        # pipeline/run_analysis.py built it before insert.
+        zone = pred["entry_zone"]
+        pred["entry_zone"] = None if zone is None else [float(zone.lower), float(zone.upper)]
+        predictions.append(pred)
     return build_envelope(
         {"predictions": predictions}, sources=["postgres"], as_of=now,
     )

@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["bull_logic_valid", "bear_logic_valid", "issues"],
+  "properties": {
+    "bull_logic_valid": {"type": "boolean", "description": "Luận điểm Bull có suy ra hợp lý từ evidence_ref đã dẫn không"},
+    "bear_logic_valid": {"type": "boolean", "description": "Luận điểm Bear có suy ra hợp lý từ evidence_ref đã dẫn không"},
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["side", "text"],
+        "properties": {
+          "side": {"type": "string", "enum": ["bull", "bear"]},
+          "text": {"type": "string", "description": "Mô tả chỗ lập luận không suy ra được từ bằng chứng, không chứa chữ số"}
+        }
+      }
+    }
+  }
+}

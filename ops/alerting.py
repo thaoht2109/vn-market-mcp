@@ -21,6 +21,16 @@ def log_event(event: str, **fields) -> None:
     logger.info(json.dumps(record, default=str, ensure_ascii=False))
 
 
+# Telegram's sendMessage caps text at 4096 UTF-16 code units; stay under
+# that in plain chars too so a synthesis report (routinely 4000-5000+ chars)
+# doesn't get silently dropped by a 400 instead of delivered.
+_TELEGRAM_MAX_LEN = 4000
+
+
+def _split_chunks(text: str, max_len: int) -> list[str]:
+    return [text[i : i + max_len] for i in range(0, len(text), max_len)] or [text]
+
+
 def send_ops_alert(text: str) -> bool:
     """Gui canh bao toi group van hanh qua Telegram Bot API.
 
@@ -33,14 +43,16 @@ def send_ops_alert(text: str) -> bool:
         log_event("alert_skipped", reason="missing TELEGRAM_BOT_TOKEN or TELEGRAM_ALERT_CHAT_ID", text=text)
         return False
 
-    try:
-        response = httpx.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
-            timeout=10.0,
-        )
-        response.raise_for_status()
-        return True
-    except httpx.HTTPError as exc:
-        log_event("alert_send_failed", error=str(exc), text=text)
-        return False
+    ok = True
+    for chunk in _split_chunks(text, _TELEGRAM_MAX_LEN):
+        try:
+            response = httpx.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": chunk},
+                timeout=10.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            log_event("alert_send_failed", error=str(exc), text=chunk)
+            ok = False
+    return ok

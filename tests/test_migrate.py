@@ -22,7 +22,7 @@ def isolated_schema_conn():
 
 def test_apply_migrations_creates_all_tables(isolated_schema_conn):
     applied = apply_migrations(isolated_schema_conn, MIGRATIONS_DIR)
-    assert len(applied) == 4
+    assert len(applied) == len(list(MIGRATIONS_DIR.glob("*.sql")))
 
     tables = {
         row[0]
@@ -30,7 +30,7 @@ def test_apply_migrations_creates_all_tables(isolated_schema_conn):
             "SELECT table_name FROM information_schema.tables WHERE table_schema='migration_test'"
         ).fetchall()
     }
-    assert {"tickers", "prices_daily", "runs", "predictions", "positions"} <= tables
+    assert {"tickers", "prices_daily", "runs", "predictions", "positions", "jobs"} <= tables
 
 
 def test_apply_migrations_is_idempotent(isolated_schema_conn):

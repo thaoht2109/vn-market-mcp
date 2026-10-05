@@ -36,8 +36,9 @@ def test_resolve_ticker_raises_with_suggestions_for_unknown_ticker(db_conn):
         resolve_ticker(db_conn, "VNX")  # typo, not a real ticker — must reject, never proceed silently
 
     assert exc_info.value.raw_input == "VNX"
-    assert set(exc_info.value.suggestions) <= {"VNM", "VNI"}
-    assert len(exc_info.value.suggestions) >= 1
+    # Don't assert suggestions is a *subset* of {VNM, VNI} — the shared DB
+    # may contain other tickers that also fuzzy-match "VNX" (e.g. VN30).
+    assert {"VNM", "VNI"} <= set(exc_info.value.suggestions)
 
 
 def test_classify_universe_tier_a_for_vn30_member(db_conn):
@@ -55,15 +56,15 @@ def test_classify_universe_tier_b_for_non_member(db_conn):
 
 
 def test_gather_coverage_inputs_reads_row_counts(db_conn):
-    insert_ticker(db_conn, "VNM")
+    insert_ticker(db_conn, "VNMTEST")
     for i in range(3):
         db_conn.execute(
             "INSERT INTO prices_daily (ticker, trade_date, open, high, low, close, volume, value, source, fetched_at)"
-            " VALUES ('VNM', %s, 1, 1, 1, 1, 1000, 100000, 'TCBS', now())",
+            " VALUES ('VNMTEST', %s, 1, 1, 1, 1, 1000, 100000, 'TCBS', now())",
             (date(2026, 9, 20 + i),),
         )
 
-    inputs = gather_coverage_inputs(db_conn, "VNM")
+    inputs = gather_coverage_inputs(db_conn, "VNMTEST")
 
     assert inputs.price_days == 3
     assert inputs.avg_liquidity_value_20d == 100000.0

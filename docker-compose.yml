@@ -12,5 +12,81 @@ services:
       - "127.0.0.1:55432:5433"
     volumes:
       - pgdata:/var/lib/postgresql/data
+
+  # Polls the `jobs` table and runs pipeline.run_analysis in the background
+  # (spec §4.8) — separate process from the Hermes/MCP container so MCP's
+  # run_analysis tool call never blocks. Talks to postgres over this
+  # compose's internal network (service name `postgres`, port 5433), same
+  # network Hermes joins externally as vn-market-mcp_default.
+  worker:
+    build: .
+    # N replicas pull from the same `jobs` queue in parallel. Safe without any
+    # code change: claim_next (pipeline/jobs.py) takes a pg_try_advisory_lock
+    # on hash(ticker, job_type), so two workers never claim the same ticker+mode
+    # — different tickers run concurrently. Start at 2 and watch the worker logs
+    # for `worker_job_rate_limited`: the real ceiling is the vnstock API rate
+    # limit (RATE_LIMIT_BACKOFF_S in ops/worker.py), not this queue. Bump higher
+    # only if you don't see rate-limit backoff. No container_name/ports here, so
+    # Compose can scale this service freely.
+    deploy:
+      replicas: 2
+    # Bind-mounted (not a named volume) so snapshot files land on the host
+    # at ./snapshots — the SAME path the Hermes gateway container bind-mounts
+    # read-only as /opt/vn-market-mcp (see hermes-docker-compose), which is
+    # how mcp_server's get_snapshot tool reads a run_analysis snapshot_ref.
+    # Without this, worker (this container) and the gateway's MCP server
+    # each saw their own private, unshared filesystem for "snapshots/".
+    volumes:
+      - ./snapshots:/app/snapshots
+    environment:
+      PIPELINE_RW_DATABASE_URL: postgresql://pipeline_rw:${PIPELINE_RW_PASSWORD:?}@postgres:5433/vnmcp
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALERT_CHAT_ID: ${TELEGRAM_ALERT_CHAT_ID:-}
+      VNSTOCK_API_KEY: ${VNSTOCK_API_KEY:-}
+      # LLM providers for llm/providers.py (Phase 5 synthesis_daily, scheduled_post
+      # mode only) — same priority order as .env: DeepSeek primary, Claude et al fallback.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      GROK_API_KEY: ${GROK_API_KEY:-}
+      GROK_BASE_URL: ${GROK_BASE_URL:-}
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # Decides WHEN/for-whom to run analysis (spec §4.2 cron table); only
+  # enqueues into `jobs`, never runs the pipeline itself — `worker` does that.
+  scheduler:
+    build: .
+    command: ["python", "-m", "ops.scheduler"]
+    environment:
+      PIPELINE_RW_DATABASE_URL: postgresql://pipeline_rw:${PIPELINE_RW_PASSWORD:?}@postgres:5433/vnmcp
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # Grades open predictions at the 20/60/120-session horizons into
+  # prediction_outcomes, deterministically — no LLM (spec §10, Phase 4).
+  grading:
+    build: .
+    command: ["python", "-m", "ops.grading_job"]
+    environment:
+      PIPELINE_RW_DATABASE_URL: postgresql://pipeline_rw:${PIPELINE_RW_PASSWORD:?}@postgres:5433/vnmcp
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # Weekly data-retention sweep (spec §7.4) — only process using the
+  # retention_job role, the only role with DELETE.
+  retention:
+    build: .
+    command: ["python", "-m", "ops.retention_job"]
+    environment:
+      RETENTION_JOB_DATABASE_URL: postgresql://retention_job:${RETENTION_JOB_PASSWORD:?}@postgres:5433/vnmcp
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
 volumes:
   pgdata:
