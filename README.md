@@ -1,6 +1,6 @@
 # vn-market-mcp
 
-Đường ống dữ liệu và phân tích cổ phiếu Việt Nam (VN30 + danh sách mở rộng), cung cấp kết quả cho trợ lý chat **Hermes** qua giao thức **MCP**.
+Đường ống dữ liệu và phân tích cổ phiếu Việt Nam, cung cấp kết quả cho trợ lý chat **Hermes** qua giao thức **MCP**. Hệ thống phân tích VN30 cùng mọi mã niêm yết mà người dùng yêu cầu hoặc theo dõi. Nhiều người dùng có thể dùng chung một hệ thống mà dữ liệu cá nhân (vị thế, danh sách theo dõi, lịch sử chat, kết quả gửi về) không bị chia sẻ cho nhau.
 
 > **Tuyên bố miễn trừ:** Đây là công cụ hỗ trợ nghiên cứu, **không phải tư vấn đầu tư** và **không tự đặt lệnh**. Mọi rủi ro giao dịch do người dùng tự chịu.
 
@@ -22,6 +22,8 @@
 14. [Xử lý sự cố](#14-xử-lý-sự-cố)
 15. [Hạn chế đã biết](#15-hạn-chế-đã-biết)
 
+Mục 10 có phần [Nhiều người dùng](#nhiều-người-dùng-dữ-liệu-tách-riêng).
+
 ---
 
 ## 1. Giới thiệu
@@ -32,6 +34,7 @@
 - Nhãn hành động: `buy_accumulate` / `watch` / `hold` / `reduce_exit` / `stay_out`.
 - Pipeline không gọi LLM (`llm.pipeline_enabled: false`). LLM duy nhất là Hermes, chỉ chạy khi người dùng hỏi. Hermes viết phần "Nhận định", và phần này phải qua bộ kiểm tra tất định trước khi được lưu hoặc gửi đi.
 - **Fail-closed:** thiếu dữ liệu, lịch giao dịch hay độ phủ thì trả trạng thái lỗi rõ ràng, không đoán.
+- **Dữ liệu chung, góc nhìn riêng:** mỗi mã chỉ được tải và phân tích một lần cho mọi người dùng, và nhãn lưu lại không phụ thuộc vị thế của ai. Phần riêng của từng người (vị thế, danh sách theo dõi, nhãn theo vị thế, kết quả gửi về) được tách theo `user_id`.
 
 Tài liệu thiết kế: `../vn-trading-agent-plan_final.md`. Kế hoạch triển khai: `../docs/superpowers/plans/2026-09-30-vn-trading-agent-phase-0-1.md`.
 
@@ -48,7 +51,14 @@ Tài liệu thiết kế: `../vn-trading-agent-plan_final.md`. Kế hoạch tri�
                                      │
                  Postgres (runs, predictions, prices…) + snapshots/*.json
                                      │
-                 MCP server (stdio) ──► Hermes (Telegram chat)
+         MCP server (stdio, mỗi Hermes profile một tiến trình, VNMCP_USER_ID)
+                                     │
+               Hermes gateway: profile default · profile của từng người
+                                     │
+                       Telegram (mỗi người một bot riêng)
+
+ worker ──kết quả on_demand──► bot + chat riêng của người yêu cầu (bảng users)
+        ──lỗi vận hành──────► nhóm ops (TELEGRAM_ALERT_CHAT_ID)
 ```
 
 Các service trong `docker-compose.yml`:
@@ -56,8 +66,8 @@ Các service trong `docker-compose.yml`:
 | Service | Lệnh | Vai trò |
 |---|---|---|
 | `postgres` | Postgres 16, cổng trong `5433`, publish `127.0.0.1:55432` | Cơ sở dữ liệu |
-| `worker` (2 bản sao) | `python -m ops.worker` | Lấy job từ hàng đợi, chạy pipeline, chạy close_sync |
-| `scheduler` | `python -m ops.scheduler` | Quyết định khi nào chạy và chạy cho mã nào, chỉ enqueue |
+| `worker` (2 bản sao) | `python -m ops.worker` | Lấy job từ hàng đợi, chạy pipeline, chạy close_sync, gửi kết quả cho người yêu cầu. Đọc token bot của từng người từ `users.env` |
+| `scheduler` | `python -m ops.scheduler` | Quyết định khi nào chạy và chạy cho mã nào (VN30 + mã người dùng theo dõi), chỉ enqueue |
 | `grading` | `python -m ops.grading_job` | Chấm dự báo tại các mốc 20/60/120 phiên (mỗi giờ) |
 | `retention` | `python -m ops.retention_job` | Dọn dữ liệu theo chính sách (mỗi tuần) |
 
@@ -75,19 +85,21 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `pipeline/fundamentals.py` | Chỉ số cơ bản theo nhóm ngành, định giá so với lịch sử và nhóm ngành |
 | `pipeline/scoring.py` | Điểm kỹ thuật, dòng tiền, điểm tổng hợp, độ tin cậy |
 | `pipeline/regime.py` | Trạng thái thị trường và độ rộng (breadth) VN30 |
-| `pipeline/action_label.py` | Nhãn hành động và nhãn tạm tính trong phiên |
+| `pipeline/action_label.py` | Nhãn hành động, nhãn tạm tính trong phiên, nhãn theo vị thế (`personal_label`) |
+| `pipeline/positions.py` | Vị thế theo từng người dùng; `personalize` áp góc nhìn của một người lên kết quả chung |
 | `pipeline/risk_plan.py` | Stop-loss theo ATR, R:R, khối lượng theo biên độ sàn |
-| `pipeline/coverage.py` | Nhận diện mã, kiểm tra độ phủ dữ liệu cho mã ngoài VN30 |
+| `pipeline/coverage.py` | Nhận diện mã (tự đăng ký mã niêm yết chưa có trong DB), kiểm tra độ phủ dữ liệu |
 | `pipeline/run_analysis.py` | Điều phối toàn bộ pipeline cho một mã, kèm CLI |
 | `pipeline/stock_report.py` | Render báo cáo cổ phiếu bằng code |
 | `pipeline/jobs.py`, `pipeline/grading.py` | Hàng đợi job, chấm dự báo |
-| `mcp_server/` | MCP server và 16 tool |
+| `mcp_server/` | MCP server và 16 tool; `identity.py` xác định người gọi (`VNMCP_USER_ID`) |
 | `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, backup |
-| `db/` | Migrations (`001`–`014`), tạo role, tạo DB test |
+| `db/` | Migrations (`001`–`016`), tạo role, tạo DB test |
 | `llm/`, `schemas/` | Các vai trò LLM trong pipeline (đang **tắt**, giữ lại để bật sau) |
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
 | `.hermes/skills/vn-market/vn-stock-analyze/` | Skill định tuyến câu hỏi chat sang các tool MCP |
 | `config/` | `vn-rules.yaml` (ngưỡng nghiệp vụ), `models.yaml` (mô hình LLM) |
+| `users.env` | Token bot Telegram của từng người dùng cho worker. Không commit (đã có trong `.gitignore`) |
 
 ## 4. Yêu cầu
 
@@ -95,6 +107,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 - Python 3.11+ (chỉ cần khi chạy test hoặc lệnh trên host)
 - API key vnstock (Community tier). Gói `vnstock`/`vnai` cài từ index riêng `https://vnstocks.com/api/simple`, không có trên PyPI công khai.
 - Bot Telegram và nhóm ops để nhận cảnh báo (tùy chọn)
+- Khi có nhiều người dùng: mỗi người một bot Telegram riêng (tạo qua @BotFather)
 
 ## 5. Cài đặt
 
@@ -106,6 +119,8 @@ cp .env.example .env && chmod 600 .env
 
 Điền các biến `MCP_RO_PASSWORD`, `PIPELINE_RW_PASSWORD`, `RETENTION_JOB_PASSWORD`, `*_DATABASE_URL`, `VNSTOCK_API_KEY`, `TELEGRAM_BOT_TOKEN` và `TELEGRAM_ALERT_CHAT_ID`.
 
+Token bot của từng người dùng không đặt ở `.env` mà ở `users.env` (xem [mục 10](#nhiều-người-dùng-dữ-liệu-tách-riêng)). Không có file này thì worker vẫn chạy.
+
 **5.2. Khởi động Postgres, chạy migration, tạo role**
 
 ```bash
@@ -115,16 +130,16 @@ python -c "from db.connection import get_conn; from db.migrate import apply_migr
 python -m db.setup_roles
 ```
 
-Lệnh tạo role sẽ tạo `mcp_ro` (chỉ đọc), `pipeline_rw` và `retention_job` (SELECT và DELETE).
+Lệnh tạo role sẽ tạo `mcp_ro` (chỉ đọc), `pipeline_rw` (SELECT, INSERT, UPDATE) và `retention_job` (SELECT và DELETE). Quyền được cấp trên các bảng **đang có**, nên sau mỗi migration tạo bảng mới (ví dụ `016` tạo `users`) phải chạy lại `python -m db.setup_roles`.
 
 **5.3. Nạp dữ liệu gốc (chạy một lần, trong venv có vnstock)**
 
 ```bash
-python ops/seed_market_data.py   # tickers, thành phần VN30, lịch giao dịch
+python ops/seed_market_data.py   # tickers VN30, thành phần VN30, lịch giao dịch
 python ops/backfill_prices.py    # lịch sử giá và BCTC (cần ≥500 phiên, ≥4 quý)
 ```
 
-Chạy lại `seed_market_data.py` khi rổ VN30 thay đổi, và ít nhất mỗi năm một lần để lịch giao dịch phủ năm mới.
+Chạy lại `seed_market_data.py` khi rổ VN30 thay đổi, và ít nhất mỗi năm một lần để lịch giao dịch phủ năm mới. Mã ngoài VN30 không cần seed hay backfill tay: lần phân tích đầu tiên tự đăng ký và tải lịch sử (xem [mục 6](#6-vận-hành)).
 
 **5.4. Chạy toàn bộ hệ thống**
 
@@ -142,20 +157,30 @@ docker compose exec worker python -m pipeline.run_analysis VNM --style long --de
 
 Các bước pipeline thực hiện:
 
-1. Nhận diện mã.
-2. Ghi dữ liệu giá, BCTC, khối ngoại và tin tức.
+1. Nhận diện mã. Mã chưa có trong bảng `tickers` được tra trong danh sách niêm yết của vnstock (`VNStockProvider.lookup_listing`). Nếu đang niêm yết, mã được tự đăng ký (tên, sàn; `HSX` ghi thành `HOSE`). Nếu không, trả `unknown_ticker` kèm gợi ý mã gần giống.
+2. Ghi dữ liệu giá, BCTC, khối ngoại và tin tức:
+   - Mã có dưới 500 phiên giá trong DB: tải khoảng 3 năm lịch sử (`HISTORY_BACKFILL_DAYS`), đủ cho ngưỡng độ phủ.
+   - Mã đã đủ lịch sử: chỉ tải từ phiên cuối đã lưu tới hôm nay, để lấp khoảng trống nếu mã lâu không được phân tích.
+   - BCTC chỉ làm mới tối đa mỗi 24 giờ.
 3. Kiểm tra chất lượng dữ liệu.
 4. Kiểm tra độ phủ dữ liệu.
 5. Tính chỉ báo và điểm.
 6. Gán nhãn và lập kế hoạch rủi ro.
 7. Ghi kết quả vào `runs`/`predictions` và `snapshots/<run_id>.json`.
 
-Cảnh báo được gửi tới nhóm ops trên Telegram (`ops/alerting.py`):
+Tin nhắn Telegram do worker gửi (`ops/worker.py`, `ops/alerting.py`):
 
-- Mọi lỗi job, `data_quality_error` và `insufficient_coverage`.
-- Kết quả của job `on_demand`.
+| Sự kiện | Gửi tới |
+|---|---|
+| Kết quả job `on_demand` (`run_analysis`, `watch_ticker`) và lỗi của nó | Người yêu cầu: qua bot riêng của họ, vào chat của họ (bảng `users`). Nhãn trong tin đã tính theo vị thế của người đó |
+| Kết quả `on_demand` khi người yêu cầu chưa đăng ký trong `users` (gồm profile `default`) | Nhóm ops (`TELEGRAM_ALERT_CHAT_ID`), như trước khi có nhiều người dùng |
+| Job crash, `data_quality_error` của job theo lịch | Nhóm ops |
+| `insufficient_coverage` của job theo lịch | Không gửi: mã nhỏ được theo dõi sẽ báo lỗi này mỗi phiên, đó là bình thường |
+| Kết quả job theo lịch | Không gửi, để tránh spam. Xem bằng `/danhsach` hoặc `get_snapshot` |
 
-Job chạy theo lịch không gửi tin nhắn để tránh spam.
+Người đã đăng ký mà token bot trống hoặc gửi lỗi thì tin bị bỏ (log `alert_skipped`/`alert_send_failed`), **không** chuyển sang nhóm ops, để kết quả của một người không lọt sang chat chung.
+
+Mỗi job `on_demand` ghi người yêu cầu vào `jobs.requested_by`: `user:<id>` (từ `run_analysis` của profile có `VNMCP_USER_ID`), `watch:<id>` (từ `watch_ticker`), `mcp` (không xác định được người) hoặc `cron`.
 
 Áp dụng migration mới cho container đang chạy:
 
@@ -170,11 +195,13 @@ Scheduler chỉ chạy vào ngày giao dịch. Giờ dưới đây là giờ Vi�
 | Giờ | Job | Mô tả |
 |---|---|---|
 | 08:30 | `macro_premarket` | Bản tin vĩ mô trước phiên. **Chỉ chạy khi** `llm.pipeline_enabled: true` |
-| 09:15, 11:00, 13:00 | `scheduled_intraday` | Làm mới số liệu trong phiên (**tạm tính**). Mốc đầu là 09:15 vì phiên ATO chưa có nến khớp |
-| 15:05 | `close_sync` | Ghi đè nến giữa phiên bằng giá đóng cửa, chốt khối ngoại, phát hiện vendor điều chỉnh giá |
-| 15:20 | `scheduled_post` | **Kết luận chính thức** trong ngày, tính trên giá đóng cửa |
+| 09:15, 11:00, 13:00 | `scheduled_intraday` | Làm mới số liệu trong phiên (**tạm tính**) cho danh sách theo lịch. Mốc đầu là 09:15 vì phiên ATO chưa có nến khớp |
+| 15:05 | `close_sync` | Ghi đè nến giữa phiên bằng giá đóng cửa, chốt khối ngoại, phát hiện vendor điều chỉnh giá. Áp dụng cho mọi mã có nến trong 10 ngày gần nhất |
+| 15:20 | `scheduled_post` | **Kết luận chính thức** trong ngày cho danh sách theo lịch, tính trên giá đóng cửa |
 | 15:30 (thứ Sáu) | `scheduled_weekly` | Phân tích sâu theo tuần cho VN30 |
 | 18:00 | `close_sync_retry` | Chạy lại close_sync cho các mã vnstock bị lỗi lúc 15:05 |
+
+**Danh sách theo lịch** (`ops.scheduler.get_watchlist`) gồm VN30 hợp với mọi mã đang được **ít nhất một** người dùng theo dõi (`watchlist_extra`, `status = 'active'`). Một mã được nhiều người theo dõi vẫn chỉ phân tích một lần mỗi mốc. Bản tuần chỉ chạy cho VN30.
 
 ## 8. Xử lý dữ liệu theo phiên
 
@@ -202,30 +229,46 @@ Scheduler chỉ chạy vào ngày giao dịch. Giờ dưới đây là giờ Vi�
 
 Thành phần thiếu dữ liệu sẽ bị bỏ qua. Nếu độ phủ trọng số dưới `coverage.min_weight_coverage` thì mã được xử lý fail-closed.
 
-Mã ngoài VN30 phải đạt các ngưỡng sau:
+Mã ngoài VN30 (nhóm B) phải đạt các ngưỡng sau, và độ tin cậy bị giới hạn ở `tier_b.confidence_cap` (0,6):
 
 - ≥500 phiên giá.
 - Thanh khoản trung bình 20 phiên ≥5 tỷ.
 - ≥4 quý BCTC.
 
+Vì vậy mã thanh khoản thấp thường nhận `insufficient_coverage` dù dữ liệu đã được tải đủ.
+
 Các ngưỡng nhãn nằm ở `action_labels` trong `vn-rules.yaml`.
+
+**Nhãn chung và nhãn theo vị thế.** Kết quả phân tích dùng chung cho mọi người dùng, nên pipeline luôn gán nhãn như với người **chưa khai báo vị thế** (`holding_state = unknown`); nhãn này được lưu trong `predictions` và snapshot. Khi một người đọc kết quả, `pipeline.positions.personalize` tính nhãn theo vị thế của chính họ (`personal_label`, khớp nhánh "đang giữ" của `action_label`):
+
+| Nhãn chung | Người không giữ mã | Người đang giữ mã |
+|---|---|---|
+| Không có nhãn (thiếu độ phủ) | Không có nhãn | Không có nhãn |
+| Dữ liệu cũ hoặc độ tin cậy dưới `min_confidence_floor` | `stay_out` | `stay_out` |
+| Điểm < `reduce_exit.max_score` (40), hoặc nhãn `reduce_exit` | giữ nguyên | `reduce_exit` |
+| `stay_out` dù điểm ≥ `watch.min_score` (bị hạ nhãn) | `stay_out` | `reduce_exit` |
+| Các trường hợp còn lại (`buy_accumulate`, `watch`, `stay_out` với điểm 40–55) | giữ nguyên | `hold` |
+
+Nhãn theo vị thế được áp dụng ở `get_snapshot`, `get_stock_report`, `list_watchlist` và tin nhắn kết quả của worker. Snapshot lưu thêm `data_stale` để tính được bảng trên; snapshot không có trường điểm (file cũ hoặc đã bị xóa) thì giữ nguyên nhãn chung. `list_predictions` và `get_stats` luôn trả nhãn chung.
 
 ## 10. MCP server và Hermes
 
 `python -m mcp_server.server` (stdio) cung cấp 16 tool. Tool chỉ đọc dùng role `mcp_ro`, tool ghi dùng role `pipeline_rw`.
 
+**Người gọi là ai** (`mcp_server/identity.py`): nếu server được chạy với biến `VNMCP_USER_ID`, mọi tool dùng id đó và **bỏ qua** tham số `declared_by` do mô hình điền vào. Nếu không có biến này (profile `default`), các tool cá nhân dùng `declared_by`, và báo lỗi khi thiếu cả hai.
+
 | Tool | Chức năng |
 |---|---|
-| `run_analysis` | Đưa yêu cầu phân tích vào hàng đợi (trả `job_id`). Nếu cache còn hiệu lực thì trả kết quả ngay |
+| `run_analysis` | Đưa yêu cầu phân tích vào hàng đợi (trả `job_id`). Nếu cache còn hiệu lực thì trả kết quả ngay. Mã ngoài VN30 đang niêm yết cũng được phân tích |
 | `get_job_status` | Trạng thái job |
-| `get_snapshot` | Snapshot theo `ticker` hoặc `run_id` |
-| `get_stock_report` | Báo cáo do code render, kèm "Nhận định" đã lưu nếu số liệu chưa đổi |
+| `get_snapshot` | Snapshot theo `ticker` hoặc `run_id`. Có `VNMCP_USER_ID` thì nhãn và `holding_state` tính theo vị thế người gọi |
+| `get_stock_report` | Báo cáo do code render (nhãn theo vị thế người gọi), kèm "Nhận định" đã lưu nếu số liệu chưa đổi |
 | `save_commentary` | Lưu "Nhận định" của Hermes sau khi qua bộ kiểm tra tất định (`verify_commentary`) |
 | `query_history` | Lịch sử `prices` / `fundamentals` / `foreign_flow` |
 | `explain_run` | Giải thích một lần chạy (stop-loss, lý do nhãn) |
 | `list_predictions`, `get_stats` | Danh sách dự báo, thống kê chấm điểm |
-| `set_position`, `clear_position` | Khai báo hoặc xóa trạng thái "đang nắm giữ", riêng từng người dùng. Người đang giữ mã thấy nhãn `hold`/`reduce_exit` thay cho nhãn chung |
-| `watch_ticker`, `unwatch_ticker`, `list_watchlist` | Danh sách theo dõi riêng từng người dùng (`declared_by`). Mã được theo dõi, kể cả ngoài VN30, được phân tích theo lịch cùng VN30 |
+| `set_position`, `clear_position` | Khai báo hoặc xóa trạng thái "đang nắm giữ" (khóa `(ticker, declared_by)`, riêng từng người). Không làm thay đổi nhãn chung hay nhãn người khác thấy |
+| `watch_ticker`, `unwatch_ticker`, `list_watchlist` | Danh sách theo dõi riêng từng người (`watchlist_extra`, khóa `(ticker, added_by)`). `watch_ticker` tự đăng ký mã niêm yết, xếp hàng một lần phân tích ngay, và đưa mã vào danh sách theo lịch. `list_watchlist` trả nhãn mới nhất theo vị thế người gọi, kèm `holding_state` |
 | `get_market_digest_input`, `get_weekly_digest_input` | Dữ liệu đầu vào cho bản tin trước phiên và bản tin tuần |
 
 Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trường hợp:
@@ -254,31 +297,50 @@ Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trư
 - Stdout của MCP stdio chỉ được chứa JSON-RPC. Mọi log đi qua stderr (`ops/alerting.py`).
 - Skill `vn-stock-analyze` chỉ được nạp khi thư mục có tổ tiên `.git`. File gitlink `vn-market-mcp/.git` (nội dung `gitdir: ../../.git`) đảm nhiệm việc này. File này **không được Git theo dõi**, nên khi clone mới phải tạo lại bằng tay, và **đừng xóa**. Nạp skill bằng: `hermes skills trust /opt/vn-market-mcp`.
 
-**Nhiều người dùng, dữ liệu tách riêng.** Dữ liệu thị trường và kết quả phân tích dùng chung (mỗi mã chỉ tải và phân tích một lần, nhãn trong `predictions` không phụ thuộc vị thế của ai). Phần riêng của từng người gồm vị thế, danh sách theo dõi, bộ nhớ và phiên chat Hermes, và kết quả phân tích gửi về. Mỗi người dùng một Hermes profile, mỗi profile có bot Telegram riêng:
+### Nhiều người dùng, dữ liệu tách riêng
 
-1. Tạo bot mới qua @BotFather, rồi tạo profile (trong thư mục `hermes-docker-compose`):
+| Dùng chung | Riêng từng người |
+|---|---|
+| Giá, BCTC, khối ngoại, tin tức | Vị thế (`positions`) |
+| `runs`, `predictions`, snapshot (nhãn chung) | Danh sách theo dõi (`watchlist_extra`) |
+| Hàng đợi job, worker | Nhãn theo vị thế khi đọc kết quả |
+| Hermes gateway (một tiến trình) | Hermes profile: `config.yaml`, `.env`, `memories/`, `sessions/` |
+| | Bot Telegram, chat nhận kết quả (`users`) |
+
+Mỗi người dùng một Hermes profile, mỗi profile có bot Telegram riêng. Dùng Telegram user id làm `user_id`, vì đó cũng là chat id khi bot nhắn riêng:
+
+1. Tạo bot mới qua @BotFather, rồi tạo profile (tên chỉ gồm chữ thường và số):
 
    ```bash
-   docker compose exec gateway hermes profile create alice --clone
+   docker exec hermes-gateway hermes profile create alice --clone --no-alias
    ```
 
-   Profile nằm ở `~/.hermes/profiles/alice/` với `config.yaml`, `.env`, `memories/` và `sessions/` riêng.
+   Profile nằm ở `~/.hermes/profiles/alice/`. `--clone` sao chép cấu hình, skill **và cả bộ nhớ** của profile `default`, nhưng không sao chép bot token và allowlist. Hãy mở `memories/USER.md` của profile mới và xóa thông tin về người khác: bộ nhớ của `default` thường chứa ghi chú về những người đã chat với bot chung.
 2. Trong `~/.hermes/profiles/alice/.env`: đặt `TELEGRAM_BOT_TOKEN=<token bot của alice>` và `TELEGRAM_ALLOWED_USERS=<telegram user id của alice>`, để chỉ chủ profile chat được với bot.
-3. Trong `~/.hermes/profiles/alice/config.yaml`, mục `mcp_servers.vn-market-mcp.env`, thêm `VNMCP_USER_ID: alice`. Server MCP của profile này luôn dùng id đó, bỏ qua `declared_by` do mô hình điền vào, nên người dùng không thể đọc hay sửa dữ liệu của người khác qua chat. Profile không đặt biến này (profile `default` hiện tại) vẫn dùng `declared_by` như cũ.
+3. Trong `~/.hermes/profiles/alice/config.yaml`, mục `mcp_servers.vn-market-mcp.env`, thêm `VNMCP_USER_ID: '<telegram user id của alice>'`. Server MCP của profile này luôn dùng id đó, bỏ qua `declared_by` do mô hình điền vào, nên người dùng không thể đọc hay sửa dữ liệu của người khác qua chat. Profile không đặt biến này (profile `default` hiện tại) vẫn dùng `declared_by` như cũ.
 4. Đăng ký nơi nhận kết quả, rồi khởi động lại worker:
 
    ```bash
    # users.env (cạnh docker-compose.yml, không commit): token mà worker dùng để gửi qua bot của alice
    echo 'TELEGRAM_BOT_TOKEN_ALICE=<token bot của alice>' >> users.env
+   chmod 600 users.env
    docker compose exec postgres psql -U vnmcp_admin -p 5433 vnmcp -c \
-     "INSERT INTO users (user_id, chat_id, bot_token_env) VALUES ('alice', '<telegram user id của alice>', 'TELEGRAM_BOT_TOKEN_ALICE')"
+     "INSERT INTO users (user_id, chat_id, bot_token_env) VALUES ('<id>', '<id>', 'TELEGRAM_BOT_TOKEN_ALICE')"
    docker compose up -d worker
    ```
 
-   Kết quả `run_analysis` và `watch_ticker` của alice chỉ gửi vào chat của alice. Yêu cầu từ người chưa đăng ký trong `users` vẫn gửi về `TELEGRAM_ALERT_CHAT_ID` như trước. Lỗi vận hành (job crash) vẫn chỉ gửi về chat vận hành.
-5. Khởi động lại gateway (`docker compose restart gateway`; một gateway phục vụ được nhiều profile) rồi kiểm tra: `docker compose exec gateway hermes -p alice mcp test vn-market-mcp`.
+   Token chỉ nằm trong biến môi trường của worker; DB chỉ lưu **tên** biến (`bot_token_env`). Từ đây kết quả `run_analysis` và `watch_ticker` của alice chỉ gửi vào chat của alice (xem bảng ở [mục 6](#6-vận-hành)).
+5. Khởi động lại gateway (`docker restart hermes-gateway`; một gateway phục vụ nhiều profile) rồi kiểm tra:
 
-Sau khi chạy migration 016 cần chạy lại `python -m db.setup_roles` để cấp quyền bảng `users` cho các role.
+   ```bash
+   docker exec hermes-gateway hermes profile list                     # profile mới có cột Gateway = running
+   docker exec hermes-gateway hermes -p alice mcp test vn-market-mcp  # Connected, 16 tools
+   ```
+6. Người dùng nhắn `/start` cho bot của mình. Telegram chỉ cho bot nhắn tới người đã nhắn bot trước.
+
+Hai profile khai báo cùng tên server `vn-market-mcp` nhưng khác `env` (khác `VNMCP_USER_ID`) thì Hermes không dùng chung kết nối MCP, nên mỗi profile có tiến trình MCP riêng gắn với đúng người.
+
+Bỏ một người dùng: xóa dòng của họ trong `users` (cần quyền admin), xóa biến trong `users.env`, rồi `docker exec hermes-gateway hermes profile delete <tên>`.
 
 Có thể kiểm thử không cần Hermes bằng MCP Inspector: `npx @modelcontextprotocol/inspector python -m mcp_server.server`.
 
@@ -319,7 +381,12 @@ Cần client `pg_dump` phiên bản 16. Nếu host khác phiên bản, chạy tr
 | Triệu chứng | Nguyên nhân / cách xử lý |
 |---|---|
 | `data_quality_error: missing_tickers` lúc trước 09:15 | Đã sửa: trước 09:15 hệ thống dùng phiên trước. Nếu vẫn gặp, kiểm tra lịch giao dịch đã được seed tới hôm nay chưa |
-| `insufficient_coverage` với mã mới | Chưa đủ 500 phiên hoặc 4 quý. Chạy `ops/backfill_prices.py` |
+| `insufficient_coverage` với mã mới | Lần chạy đầu đã tự tải khoảng 3 năm giá. Nếu vẫn báo lỗi thì mã chưa đủ 500 phiên niêm yết, thanh khoản 20 phiên dưới 5 tỷ, hoặc chưa đủ 4 quý BCTC: đúng thiết kế, không phải lỗi |
+| `unknown_ticker` | Mã không có trong danh sách niêm yết của vnstock (gõ sai, đã hủy niêm yết). Xem gợi ý trong cảnh báo |
+| `data_quality_error` với mã ít giao dịch | Phiên hôm nay mã không có giao dịch nên thiếu nến. Chạy lại ở phiên có giao dịch |
+| Người dùng không nhận được kết quả | Kiểm tra dòng của họ trong `users`, biến `bot_token_env` tương ứng trong `users.env`, đã `docker compose up -d worker` sau khi sửa, và họ đã `/start` bot. Log worker: `alert_skipped` (thiếu token) hoặc `alert_send_failed` |
+| Kết quả của một người lại về nhóm ops | Người đó chưa có dòng trong `users`, hoặc đang chat qua profile `default` |
+| Profile mới có Gateway = `stopped` | Chưa đặt `TELEGRAM_BOT_TOKEN` trong `.env` của profile, hoặc chưa restart `hermes-gateway` |
 | Báo cáo ghi "tạm tính trong phiên" | Đúng thiết kế. Kết luận chính thức có sau 15:20 |
 | Giá lịch sử có khoảng trống giả quanh ngày GDKHQ | Vendor đã điều chỉnh giá. close_sync tự tải lại; kiểm tra log `close_sync_done` → `rebased` |
 | Kết nối DB treo tới timeout | URL đang dùng `postgres:5432`. Đổi sang `postgres:5433` |
@@ -333,3 +400,8 @@ Cần client `pg_dump` phiên bản 16. Nếu host khác phiên bản, chạy tr
 - `retention_job` chưa có chính sách xóa nào, mới chỉ dựng sẵn hạ tầng.
 - Các vai trò LLM trong `llm/` (news digest, bull/bear, verifier, synthesis, macro) đang tắt và được giữ lại để đánh giá.
 - Dữ liệu khối ngoại của KBS chỉ có giá trị "hiện tại", không có lịch sử. Giá trị cuối ngày được chốt tại close_sync.
+- Kết quả phân tích theo lịch của mã trong danh sách theo dõi không được gửi chủ động cho người theo dõi; họ xem bằng `/danhsach`.
+- Profile `default` (bot chung) không có `VNMCP_USER_ID`, nên vẫn tin vào `declared_by` do mô hình điền. Ai cần dữ liệu riêng tư thì nên dùng profile riêng.
+- Không giới hạn số mã mỗi người theo dõi. Mỗi mã thêm vào làm tăng số lần gọi vnstock ở mỗi mốc theo lịch (giới hạn 60 lần/phút).
+- "Nhận định" đã lưu (`report_commentary`) dùng chung theo mã. Người đang giữ và người không giữ thấy nhãn khác nhau nên dấu vân tay số liệu khác nhau, và nhận định sẽ bị viết lại khi hai nhóm luân phiên hỏi cùng một mã.
+- Khi lấp khoảng trống giá cho mã lâu không phân tích, nếu khoảng trống chứa ngày GDKHQ thì phần lịch sử cũ vẫn theo mức giá chưa điều chỉnh cho tới khi close_sync phát hiện và tải lại.
