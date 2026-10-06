@@ -15,6 +15,10 @@ def seeded(monkeypatch):
         ensure_news_partitions(conn, date.today())
         conn.execute("DELETE FROM news_items WHERE source LIKE 'test_%'")
         conn.execute("DELETE FROM source_health WHERE source LIKE 'test_%'")
+        conn.execute("DELETE FROM macro_indicators WHERE source = 'test_sbv'")
+        for day, v in ((date.today(), 25643), (date.today() - timedelta(days=1), 25600)):
+            conn.execute("INSERT INTO macro_indicators VALUES"
+                         " ('usd_vnd_central', %s, %s, 'VND', 'test_sbv', 'http://t', now())", (day, v))
         put = lambda url, title, status, pillars: store_news_item(
             conn, source="test_fresh", url=url, title=title, summary=None, published_at=now - timedelta(hours=1),
             fetched_at=now, tickers=[], pillars=pillars, stream="A", filter_status=status, filter_reason=None)
@@ -26,6 +30,7 @@ def seeded(monkeypatch):
     with get_conn() as conn:
         conn.execute("DELETE FROM news_items WHERE source LIKE 'test_%'")
         conn.execute("DELETE FROM source_health WHERE source LIKE 'test_%'")
+        conn.execute("DELETE FROM macro_indicators WHERE source = 'test_sbv'")
 
 
 def test_macro_context_returns_kept_headlines_by_pillar_and_source_freshness(seeded):
@@ -38,6 +43,9 @@ def test_macro_context_returns_kept_headlines_by_pillar_and_source_freshness(see
     status = {s["source"]: s for s in out["data"]["news_sources"]}
     assert status["test_fresh"]["stale"] is False and status["test_never"]["stale"] is True
     assert any("test_never" in w for w in out["warnings"])
+    central = out["data"]["indicators"]["usd_vnd_central"]
+    assert [p["value"] for p in central["series"]] == [25643, 25600]  # newest first
+    assert not any("NHNN" in w for w in out["warnings"])
 
 
 def test_days_is_clamped(seeded):

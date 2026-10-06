@@ -21,6 +21,7 @@ from mcp_server.connection import get_rw_conn
 from ops.alerting import log_event, send_ops_alert
 from ops.scheduler import CLOSE_SYNC_JOB_TYPES, get_vn30_tickers
 from pipeline.collectors.rss import run_collect_rss
+from pipeline.collectors.sbv import run_collect_sbv
 from pipeline.ingest import sync_recent_prices
 from pipeline.jobs import COLLECT_JOB_TYPES, claim_next, mark_done, mark_failed, reclaim_stale_running, release, requeue
 from pipeline.run_analysis import run_analysis
@@ -85,7 +86,7 @@ def _run_close_sync(conn) -> None:
 
 def _run_collect_rss(conn) -> None:
     summary = run_collect_rss(conn, vn30=get_vn30_tickers(conn), send=send_ops_alert)
-    log_event("collect_rss_done", **summary)
+    log_event("collect_rss_done", **summary, sbv_rows=run_collect_sbv(conn))
 
 
 def run_one(conn) -> bool:
