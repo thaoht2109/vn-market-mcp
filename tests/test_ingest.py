@@ -276,3 +276,43 @@ def test_sync_recent_prices_ignores_normal_noise_and_mid_session_reference(db_co
 
     outcome = [o for o in sync_recent_prices(db_conn, provider, date(2020, 1, 8)) if o.ticker == "SYNCC"][0]
     assert outcome.detail is None
+
+
+def test_ingest_news_failures_are_recorded_in_source_health_not_swallowed(db_conn, monkeypatch):
+    import pipeline.ingest as ingest
+    from providers.vnstock_provider import NewsItem
+
+    monkeypatch.setattr(ingest, "_news_pause_until", 0.0)
+
+    class _Down:
+        def get_news(self, ticker, start, end):
+            raise TimeoutError("iq.vietcap.com.vn read timed out")
+
+    assert ingest.ingest_news(db_conn, _Down(), "ACB", date(2026, 10, 1), date(2026, 10, 2)) == 0
+    failures, error = db_conn.execute(
+        "SELECT consecutive_failures, last_error FROM source_health WHERE source = 'vnstock_news'").fetchone()
+    assert failures == 1 and "timed out" in error
+
+    monkeypatch.setattr(ingest, "_news_pause_until", 0.0)
+    published = datetime(2031, 1, 1, tzinfo=timezone.utc)  # no partition: the insert fails
+    far = NewsItem(ticker="ACB", published_at=published, source="v", url="http://x/h1", title="no partition",
+                   summary=None, fetched_at=published)
+
+    class _Far:
+        def get_news(self, ticker, start, end):
+            return [far]
+
+    assert ingest.ingest_news(db_conn, _Far(), "ACB", date(2030, 12, 30), date(2031, 1, 2)) == 0
+    failures, error = db_conn.execute(
+        "SELECT consecutive_failures, last_error FROM source_health WHERE source = 'vnstock_news'").fetchone()
+    assert failures == 2 and "insert failed" in error
+
+    monkeypatch.setattr(ingest, "_news_pause_until", 0.0)
+
+    class _Empty:
+        def get_news(self, ticker, start, end):
+            return []
+
+    ingest.ingest_news(db_conn, _Empty(), "ACB", date(2026, 10, 1), date(2026, 10, 2))
+    assert db_conn.execute(
+        "SELECT consecutive_failures FROM source_health WHERE source = 'vnstock_news'").fetchone()[0] == 0

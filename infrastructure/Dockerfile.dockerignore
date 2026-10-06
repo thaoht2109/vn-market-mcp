@@ -1,0 +1,16 @@
+# Build context is the repo root (see build.context in docker-compose.yml); BuildKit picks up
+# this file because it sits next to the Dockerfile. Keeps secrets and bulky/local-only paths
+# out of the image (COPY . . in Dockerfile).
+.env
+**/.env
+.venv
+.git
+.claude
+.codegraph
+.code-review-graph
+.pytest_cache
+__pycache__
+*.pyc
+# bind-mounted at runtime (worker: ${SNAPSHOTS_DIR}:/app/snapshots)
+snapshots
+backups

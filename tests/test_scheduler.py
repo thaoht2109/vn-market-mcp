@@ -31,7 +31,7 @@ def test_run_due_jobs_enqueues_weekly_on_friday_vn30_only(db_conn):
 
         run_due_jobs(db_conn, now, fired)  # second call same day must not duplicate
     finally:
-        db_conn.execute("DELETE FROM jobs WHERE job_key LIKE %s", (f"%:{friday.isoformat()}",))
+        db_conn.execute("DELETE FROM jobs WHERE job_key LIKE %s", (f"%:{friday.isoformat()}%",))  # trailing % also matches collect_rss slot suffixes
         db_conn.execute("DELETE FROM index_membership WHERE ticker = 'WEEKVN30'")
         db_conn.execute("DELETE FROM watchlist_extra WHERE ticker = 'WEEKEXTRA'")
         db_conn.commit()
@@ -71,7 +71,7 @@ def test_run_due_jobs_enqueues_watchlist_once_per_day(db_conn, monkeypatch):
         run_due_jobs(db_conn, datetime(2020, 1, 7, 8, 50, tzinfo=timezone.utc), fired)  # 15:50 VN
         assert get_job(db_conn, f"close_sync:{MACRO_TICKER}:{today.isoformat()}")["status"] == "queued"
     finally:
-        db_conn.execute("DELETE FROM jobs WHERE job_key LIKE %s", (f"%:{today.isoformat()}",))
+        db_conn.execute("DELETE FROM jobs WHERE job_key LIKE %s", (f"%:{today.isoformat()}%",))
         db_conn.execute("DELETE FROM index_membership WHERE ticker = 'SCHEDTEST'")
         db_conn.commit()
 
@@ -122,5 +122,42 @@ def test_close_sync_runs_before_post_and_is_retried_in_the_evening(db_conn):
         run_due_jobs(db_conn, datetime(2020, 1, 8, 11, 5, tzinfo=timezone.utc), fired)  # 18:05 VN
         assert get_job(db_conn, f"close_sync_retry:{MACRO_TICKER}:{day.isoformat()}")["status"] == "queued"
     finally:
-        db_conn.execute("DELETE FROM jobs WHERE job_key LIKE %s", (f"%:{day.isoformat()}",))
+        db_conn.execute("DELETE FROM jobs WHERE job_key LIKE %s", (f"%:{day.isoformat()}%",))
         db_conn.commit()
+
+
+def test_collect_rss_is_enqueued_hourly_from_0600_vn_and_not_twice(db_conn):
+    from ops.scheduler import _run_collect_if_due
+
+    fired: set[str] = set()
+    try:
+        _run_collect_if_due(db_conn, datetime(2020, 1, 6, 22, 0, tzinfo=timezone.utc), fired)  # 05:00 VN: too early
+        assert get_job(db_conn, f"collect_rss:{MACRO_TICKER}:2020-01-07:05") is None
+        _run_collect_if_due(db_conn, datetime(2020, 1, 7, 2, 0, tzinfo=timezone.utc), fired)   # 09:00 VN
+        _run_collect_if_due(db_conn, datetime(2020, 1, 7, 2, 1, tzinfo=timezone.utc), fired)   # same hour again
+        assert get_job(db_conn, f"collect_rss:{MACRO_TICKER}:2020-01-07:09")["status"] == "queued"
+        assert db_conn.execute("SELECT count(*) FROM jobs WHERE job_type = 'collect_rss'"
+                               " AND job_key LIKE 'collect_rss:%:2020-01-07:%'").fetchone()[0] == 1
+        _run_collect_if_due(db_conn, datetime(2020, 1, 11, 16, 0, tzinfo=timezone.utc), fired)  # Sat 23:00 VN: weekends run too
+        assert get_job(db_conn, f"collect_rss:{MACRO_TICKER}:2020-01-11:23")["status"] == "queued"
+    finally:
+        db_conn.execute("DELETE FROM jobs WHERE job_key LIKE 'collect_rss:%:2020-01-%'")
+        db_conn.commit()
+
+
+def test_partition_creation_failure_alerts_ops_but_never_stops_the_scheduler(monkeypatch):
+    import ops.scheduler as scheduler
+
+    alerts = []
+
+    class _Boom:
+        def __enter__(self):
+            raise RuntimeError("permission denied")
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(scheduler, "get_admin_conn", lambda: _Boom())
+    monkeypatch.setattr(scheduler, "send_ops_alert", alerts.append)
+    scheduler._ensure_partitions(date(2026, 10, 6))  # must not raise
+    assert len(alerts) == 1 and "partition" in alerts[0]

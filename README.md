@@ -62,7 +62,7 @@ Tài liệu thiết kế: `../vn-trading-agent-plan_final.md`. Kế hoạch tri�
  worker ──chỉ lỗi vận hành──► nhóm ops (TELEGRAM_ALERT_CHAT_ID, bot chung)
 ```
 
-Các service trong `docker-compose.yml`:
+Các service trong `infrastructure/docker-compose.yml`:
 
 | Service | Lệnh | Vai trò |
 |---|---|---|
@@ -81,6 +81,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `providers/vnstock_provider.py` | Wrapper vnstock, chuẩn hóa đơn vị giá về VND |
 | `pipeline/calendar.py` | Lịch giao dịch, xác định phiên mới nhất và phiên tạm tính |
 | `pipeline/ingest.py` | Ghi OHLCV, BCTC, khối ngoại, tin tức (idempotent); `sync_recent_prices` |
+| `pipeline/news.py`, `news_filter.py`, `news_health.py`, `collectors/rss.py` | Thu thập tin RSS: nguồn và partition, lọc tầng 1 (không xóa tin; chạy lại bằng `python -m pipeline.news_filter --refilter --days N`), độ mới từng nguồn, bộ thu RSS. Cấu hình: `config/news_sources.yaml`, `macro_keywords.yaml`, `ticker_aliases.yaml` |
 | `quality/checks.py` | Kiểm tra chất lượng: đủ dữ liệu, schema, đơn vị giá, biến động bất thường, khối lượng, độ mới |
 | `pipeline/indicators.py` | MA/EMA/RSI/MACD/Bollinger/ATR |
 | `pipeline/fundamentals.py` | Chỉ số cơ bản theo nhóm ngành, định giá so với lịch sử và nhóm ngành |
@@ -93,13 +94,14 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `pipeline/run_analysis.py` | Điều phối toàn bộ pipeline cho một mã, kèm CLI |
 | `pipeline/stock_report.py` | Render báo cáo cổ phiếu bằng code |
 | `pipeline/jobs.py`, `pipeline/grading.py` | Hàng đợi job, chấm dự báo |
-| `mcp_server/` | MCP server và 16 tool; `identity.py` xác định người gọi (`VNMCP_USER_ID`) |
+| `mcp_server/` | MCP server và 17 tool; `identity.py` xác định người gọi (`VNMCP_USER_ID`) |
 | `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, backup, `add_user.sh` / `remove_user.sh` (thêm / xóa người dùng) |
-| `db/` | Migrations (`001`–`017`), tạo role, tạo DB test |
+| `db/` | Migrations (`001`–`018`), tạo role, tạo DB test |
 | `llm/`, `schemas/` | Các vai trò LLM trong pipeline (đang **tắt**, giữ lại để bật sau) |
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
 | `.hermes/skills/vn-market/vn-stock-analyze/` | Skill duy nhất cho phân tích cổ phiếu VN: định tuyến câu hỏi sang tool MCP, giọng văn, quy trình báo cáo. Dùng chung, chỉ đọc cho mọi profile |
 | `config/` | `vn-rules.yaml` (ngưỡng nghiệp vụ), `models.yaml` (mô hình LLM) |
+| `infrastructure/` | `docker-compose.yml`, `Dockerfile` (+ `.dockerignore`), `.env.example`: toàn bộ cấu hình Docker, mọi giá trị phụ thuộc máy (cổng, đường dẫn, tên project, số worker) khai báo qua `infrastructure/.env` |
 
 ## 4. Yêu cầu
 
@@ -114,8 +116,13 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 **5.1. Tạo file môi trường**
 
 ```bash
-cp .env.example .env && chmod 600 .env
+cp .env.example .env && chmod 600 .env                                              # lệnh chạy trên host
+cp infrastructure/.env.example infrastructure/.env && chmod 600 infrastructure/.env  # stack Docker
 ```
+
+`.env` gốc có `COMPOSE_FILE=infrastructure/docker-compose.yml`, nên mọi lệnh `docker compose ...` trong tài liệu này chạy được từ thư mục gốc. Compose lấy biến từ `infrastructure/.env` (thư mục chứa file compose); các mật khẩu role ở hai file phải trùng nhau.
+
+Khi chuyển sang máy khác, chỉ cần sửa `infrastructure/.env`: `POSTGRES_PUBLISH_PORT`/`POSTGRES_PUBLISH_BIND` (cổng trên host, khớp với `localhost:<cổng>` trong các URL ở `.env` gốc), `SNAPSHOTS_DIR` (thư mục snapshot, phải trùng với thư mục Hermes gateway mount), `WORKER_REPLICAS`, image. Giữ `COMPOSE_PROJECT_NAME=vn-market-mcp` trừ khi đổi luôn tên mạng `<tên>_default` bên Hermes; đổi tên này cũng tạo volume DB mới (`<tên>_pgdata`).
 
 Điền các biến `MCP_RO_PASSWORD`, `PIPELINE_RW_PASSWORD`, `RETENTION_JOB_PASSWORD`, `*_DATABASE_URL`, `VNSTOCK_API_KEY`, `TELEGRAM_BOT_TOKEN` và `TELEGRAM_ALERT_CHAT_ID`.
 
@@ -199,6 +206,7 @@ Scheduler chỉ chạy vào ngày giao dịch. Giờ dưới đây là giờ Vi�
 | 15:20 | `scheduled_post` | **Kết luận chính thức** trong ngày cho danh sách theo lịch, tính trên giá đóng cửa |
 | 15:30 (thứ Sáu) | `scheduled_weekly` | Phân tích sâu theo tuần cho VN30 |
 | 18:00 | `close_sync_retry` | Chạy lại close_sync cho các mã vnstock bị lỗi lúc 15:05 |
+| Mỗi giờ 06:00–23:00 (cả cuối tuần) | `collect_rss` | Thu tin RSS vĩ mô và doanh nghiệp, lọc tầng 1 bằng quy tắc, cập nhật độ mới nguồn, cảnh báo nhóm ops khi nguồn im lặng hoặc lỗi |
 
 **Danh sách theo lịch** (`ops.scheduler.get_watchlist`) gồm VN30 hợp với mọi mã đang được **ít nhất một** người dùng theo dõi (`watchlist_extra`, `status = 'active'`). Một mã được nhiều người theo dõi vẫn chỉ phân tích một lần mỗi mốc. Bản tuần chỉ chạy cho VN30.
 
@@ -252,7 +260,7 @@ Nhãn theo vị thế được áp dụng ở `get_snapshot`, `get_stock_report`
 
 ## 10. MCP server và Hermes
 
-`python -m mcp_server.server` (stdio) cung cấp 16 tool. Tool chỉ đọc dùng role `mcp_ro`, tool ghi dùng role `pipeline_rw`.
+`python -m mcp_server.server` (stdio) cung cấp 17 tool. Tool chỉ đọc dùng role `mcp_ro`, tool ghi dùng role `pipeline_rw`.
 
 **Người gọi là ai** (`mcp_server/identity.py`): là `VNMCP_USER_ID` của profile đã chạy MCP server, và chỉ là biến đó. Tool không nhận id người dùng làm tham số. Server không có biến này (profile `default`, phục vụ nhóm chung) thì tool phân tích chạy bình thường, còn tool danh mục riêng trả `status="no_personal_scope"` kèm cảnh báo, không ghi gì vào DB.
 
@@ -269,6 +277,7 @@ Nhãn theo vị thế được áp dụng ở `get_snapshot`, `get_stock_report`
 | `set_position`, `clear_position` | Khai báo hoặc xóa trạng thái "đang nắm giữ" của người đang chat (khóa `(ticker, declared_by)` = `VNMCP_USER_ID`). Không làm thay đổi nhãn chung hay nhãn người khác thấy. Nhóm chung: `no_personal_scope` |
 | `watch_ticker`, `unwatch_ticker`, `list_watchlist` | Danh sách theo dõi riêng từng người (`watchlist_extra`, khóa `(ticker, added_by)`). `watch_ticker` tự đăng ký mã niêm yết, xếp hàng một lần phân tích ngay, và đưa mã vào danh sách theo lịch. `list_watchlist` trả nhãn mới nhất theo vị thế người gọi, kèm `holding_state` |
 | `get_market_digest_input`, `get_weekly_digest_input` | Dữ liệu đầu vào cho bản tin trước phiên và bản tin tuần |
+| `get_macro_context` | Tin vĩ mô đã lọc theo 7 trụ cột trong N ngày, kèm độ mới của từng nguồn tin (nguồn quá hạn có cảnh báo) |
 
 Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trường hợp:
 
@@ -403,7 +412,7 @@ Có thể kiểm thử không cần Hermes bằng MCP Inspector: `npx @modelcont
 - **`config/models.yaml`** khai báo mô hình cho các vai trò LLM trong pipeline. Hiện không dùng vì pipeline đang tắt LLM.
 - **Bật lại vai trò LLM trong pipeline:**
   1. Đặt `llm.pipeline_enabled: true`.
-  2. Thêm khóa provider (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, …) vào service `worker` trong `docker-compose.yml`.
+  2. Thêm khóa provider (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, …) vào service `worker` trong `infrastructure/docker-compose.yml` và `infrastructure/.env`.
 
 ## 12. Kiểm thử
 
@@ -474,3 +483,5 @@ Các thay đổi lớn về cách dùng nhiều người (tháng 10/2026), mới
 | Một skill chung chỉ đọc (`skills.external_dirs`) thay cho hai skill Hermes tự viết; góc nhìn cá nhân nằm trong bộ nhớ profile | — | Skill cũ sao lưu ở `~/.hermes/backups/skills-retired-*` |
 | Từ bot chung + `gateway.profile_routes` chuyển sang mỗi người một bot riêng; `ops/add_user.sh`, `ops/remove_user.sh` không restart gateway | — | Thêm luật định tuyến cần restart; bot riêng thì không |
 | Worker chỉ gửi cảnh báo vận hành; Hermes trả lời mọi job theo yêu cầu, kể cả lần đầu của `watch_ticker` | `017` | Bỏ bảng `users` (tạo ở `016`) và token bot riêng phía worker |
+| Cấu hình Docker chuyển vào `infrastructure/`, mọi giá trị phụ thuộc máy khai báo trong `infrastructure/.env` | — | Thêm `COMPOSE_FILE` vào `.env` gốc và tạo `infrastructure/.env`; tên project cố định `vn-market-mcp` nên volume DB và mạng Hermes không đổi |
+| Thu thập tin RSS vĩ mô và doanh nghiệp, lọc bằng quy tắc, theo dõi độ mới nguồn; tool `get_macro_context`; sửa khóa job không ổn định giữa worker, partition `news_items` tự gia hạn, lỗi tin vnstock không còn bị nuốt | `018` | Thêm `feedparser` (cần build lại image) và `ADMIN_DATABASE_URL` cho scheduler; sau migration chạy lại `python -m db.setup_roles`; restart Hermes gateway để nạp tool mới |

@@ -22,7 +22,7 @@ if [[ ! "$NAME" =~ ^[a-z0-9]+$ || "$NAME" == "default" || ( -n "$YES" && "$YES" 
   exit 2
 fi
 STAMP=$(date +%Y%m%d-%H%M%S)
-psql_admin() { docker compose exec -T postgres psql -U vnmcp_admin -p 5433 vnmcp -v ON_ERROR_STOP=1 "$@" </dev/null; }  # don't eat the confirmation
+psql_admin() { docker compose -f infrastructure/docker-compose.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -p "$PGPORT" "$POSTGRES_DB" "$@"' psql -v ON_ERROR_STOP=1 "$@" </dev/null; }  # don't eat the confirmation
 
 # Plan (read-only) and apply share one script; MODE picks which.
 hermes_py() {

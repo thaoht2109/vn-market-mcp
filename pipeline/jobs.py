@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -11,11 +12,19 @@ import psycopg
 # died) — safe to requeue rather than leave it stuck forever.
 STALE_RUNNING_AFTER = timedelta(minutes=15)
 
-# Postgres advisory locks take a single bigint key; hash (ticker, job_type)
-# into one so concurrent runs of the same ticker+mode serialize (spec §4.4)
-# without a separate lock table.
+# Market-wide collection jobs: claimed before analysis jobs so they are not stuck behind the ~30
+# tickers queued at 15:05-15:30.
+COLLECT_RSS_JOB_TYPE = "collect_rss"
+COLLECT_JOB_TYPES = (COLLECT_RSS_JOB_TYPE,)
+
+
+# Postgres advisory locks take a single bigint key; hash (ticker, job_type) into one so concurrent
+# runs of the same ticker+mode serialize (spec §4.4) without a separate lock table. Must be stable
+# across processes: the builtin hash() is randomised per process, so two workers would take
+# different locks for the same job.
 def _lock_key(ticker: str, job_type: str) -> int:
-    return hash((ticker, job_type)) & 0x7FFFFFFFFFFFFFFF
+    digest = hashlib.blake2b(f"{ticker}|{job_type}".encode(), digest_size=8).digest()
+    return int.from_bytes(digest, "big") & 0x7FFFFFFFFFFFFFFF
 
 
 @dataclass
@@ -80,7 +89,9 @@ def claim_next(conn: psycopg.Connection) -> Job | None:
     already running elsewhere. Returns None if nothing claimable right now."""
     row = conn.execute(
         "SELECT id, job_key, job_type, ticker, style, depth, requested_by, attempts"
-        " FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 20"
+        " FROM jobs WHERE status = 'queued'"
+        " ORDER BY (job_type = ANY(%s::text[])) DESC, created_at LIMIT 20",
+        (list(COLLECT_JOB_TYPES),),
     ).fetchall()
     for job_id, job_key, job_type, ticker, style, depth, requested_by, attempts in row:
         got_lock = conn.execute(

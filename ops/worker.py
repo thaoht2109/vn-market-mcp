@@ -20,8 +20,9 @@ from llm.macro import MACRO_JOB_TYPE, MacroDigestValidationError, run_macro_dail
 from mcp_server.connection import get_rw_conn
 from ops.alerting import log_event, send_ops_alert
 from ops.scheduler import CLOSE_SYNC_JOB_TYPES, get_vn30_tickers
+from pipeline.collectors.rss import run_collect_rss
 from pipeline.ingest import sync_recent_prices
-from pipeline.jobs import claim_next, mark_done, mark_failed, reclaim_stale_running, release, requeue
+from pipeline.jobs import COLLECT_JOB_TYPES, claim_next, mark_done, mark_failed, reclaim_stale_running, release, requeue
 from pipeline.run_analysis import run_analysis
 from providers.vnstock_provider import VNStockProvider
 
@@ -82,6 +83,11 @@ def _run_close_sync(conn) -> None:
     log_event("close_sync_done", synced=len(outcomes) - len(failed), rebased=rebased, failed=failed)
 
 
+def _run_collect_rss(conn) -> None:
+    summary = run_collect_rss(conn, vn30=get_vn30_tickers(conn), send=send_ops_alert)
+    log_event("collect_rss_done", **summary)
+
+
 def run_one(conn) -> bool:
     """Claim and process one job. Returns False if the queue was empty."""
     job = claim_next(conn)
@@ -90,9 +96,11 @@ def run_one(conn) -> bool:
 
     log_event("worker_job_started", job_key=job.job_key, ticker=job.ticker, attempts=job.attempts)
     try:
-        if job.job_type == MACRO_JOB_TYPE or job.job_type in CLOSE_SYNC_JOB_TYPES:
+        if job.job_type == MACRO_JOB_TYPE or job.job_type in CLOSE_SYNC_JOB_TYPES or job.job_type in COLLECT_JOB_TYPES:
             if job.job_type == MACRO_JOB_TYPE:
                 _run_macro_premarket(conn)
+            elif job.job_type in COLLECT_JOB_TYPES:
+                _run_collect_rss(conn)
             else:
                 _run_close_sync(conn)
             mark_done(conn, job, None)

@@ -13,14 +13,15 @@ Run as a long-lived process:
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 from llm.macro import MACRO_JOB_TYPE
-from mcp_server.connection import get_rw_conn
-from ops.alerting import log_event
+from mcp_server.connection import get_admin_conn, get_rw_conn
+from ops.alerting import log_event, send_ops_alert
 from pipeline.calendar import NoCalendarDataError, is_trading_day
-from pipeline.jobs import enqueue
+from pipeline.jobs import COLLECT_RSS_JOB_TYPE, enqueue
+from pipeline.news import ensure_news_partitions
 from pipeline.llm_gate import llm_pipeline_enabled
 
 POLL_INTERVAL_S = 60
@@ -71,6 +72,39 @@ CLOSE_SYNC_RETRY_JOB_TYPE = "close_sync_retry"
 CLOSE_SYNC_RETRY_TRIGGER = (11, 0)
 CLOSE_SYNC_JOB_TYPES = (CLOSE_SYNC_JOB_TYPE, CLOSE_SYNC_RETRY_JOB_TYPE)
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+# RSS news collection: one market-wide job per hour from 06:00 VN, every day (news does not stop at the
+# weekend). The job itself decides which sources are due (config/news_sources.yaml `every_minutes`).
+COLLECT_FIRST_HOUR_VN = 6
+
+
+def _run_collect_if_due(conn, now: datetime, already_fired_today: set[str]) -> None:
+    vn = now.astimezone(_VN_TZ)
+    if vn.hour < COLLECT_FIRST_HOUR_VN:
+        return
+    slot = f"{vn.hour:02d}"
+    fired_key = f"{COLLECT_RSS_JOB_TYPE}:{vn.date().isoformat()}:{slot}"
+    if fired_key in already_fired_today:
+        return
+    already_fired_today.add(fired_key)
+    job_key, created = enqueue(
+        conn, MACRO_TICKER, job_type=COLLECT_RSS_JOB_TYPE, requested_by="cron", schedule_date=vn.date(), slot=slot,
+    )
+    if created:
+        log_event("scheduler_enqueued", job_key=job_key, ticker=MACRO_TICKER, job_type=COLLECT_RSS_JOB_TYPE)
+
+
+def _ensure_partitions(today: date) -> None:
+    """Keep news_items partitions 3 months ahead; a failure alerts ops but never stops the scheduler
+    (it retries daily, so there are ~3 months to react before inserts would start failing)."""
+    try:
+        with get_admin_conn() as conn:
+            created = ensure_news_partitions(conn, today)
+        if created:
+            log_event("news_partitions_created", names=created)
+    except Exception as exc:
+        log_event("news_partitions_failed", error=str(exc))
+        send_ops_alert(f"[vn-market-mcp] không tạo được partition news_items: {type(exc).__name__}: {exc}")
 
 
 def intraday_slot(now: datetime) -> str | None:
@@ -166,6 +200,7 @@ def run_due_jobs(conn, now: datetime, already_fired_today: set[str]) -> None:
     _run_macro_premarket_if_due(conn, now, already_fired_today)
     _run_market_job_if_due(conn, now, already_fired_today, CLOSE_SYNC_JOB_TYPE, CLOSE_SYNC_TRIGGER)
     _run_market_job_if_due(conn, now, already_fired_today, CLOSE_SYNC_RETRY_JOB_TYPE, CLOSE_SYNC_RETRY_TRIGGER)
+    _run_collect_if_due(conn, now, already_fired_today)
 
 
 def _run_weekly_if_due(conn, now: datetime, already_fired_today: set[str]) -> None:
@@ -234,6 +269,7 @@ def main() -> None:
         if last_date != now.date():
             already_fired_today.clear()
             last_date = now.date()
+            _ensure_partitions(now.astimezone(_VN_TZ).date())  # also runs at start-up (last_date is None)
         with get_rw_conn() as conn:
             run_due_jobs(conn, now, already_fired_today)
         time.sleep(POLL_INTERVAL_S)

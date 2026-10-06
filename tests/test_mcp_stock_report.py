@@ -103,3 +103,27 @@ def test_rejected_commentary_is_never_cached(seeded):
     out = save_commentary_tool(TICKER, RUN, GOOD + " Mục tiêu 999.")["data"]
     assert out["status"] == "rejected" and out["issues"]
     assert get_stock_report_tool(TICKER, RUN)["data"]["needs_commentary"] is True
+
+
+def test_report_news_rows_exclude_dropped_items_but_keep_untagged_vnstock_news():
+    from datetime import datetime, timedelta, timezone
+    from mcp_server.connection import get_ro_conn
+    from mcp_server.tools.stock_report import _news_rows
+    from pipeline.news import ensure_news_partitions
+
+    now = datetime.now(timezone.utc)
+    with get_conn() as conn:
+        ensure_news_partitions(conn, date.today())
+        conn.execute("DELETE FROM news_items WHERE source LIKE 'test_%'")
+        for url, status in (("http://t/n1", "kept"), ("http://t/n2", "dropped"), ("http://t/n3", None)):
+            conn.execute(
+                "INSERT INTO news_items (published_at, tickers, source, url, url_hash, title, fetched_at, filter_status)"
+                " VALUES (%s, ARRAY['TSTNEWS'], 'test_n', %s, %s, %s, %s, %s)",
+                (now - timedelta(hours=1), url, url, f"title {url}", now, status))
+    try:
+        with get_ro_conn() as conn:
+            titles = {r[1] for r in _news_rows(conn, "TSTNEWS")}
+        assert titles == {"title http://t/n1", "title http://t/n3"}
+    finally:
+        with get_conn() as conn:
+            conn.execute("DELETE FROM news_items WHERE source LIKE 'test_%'")

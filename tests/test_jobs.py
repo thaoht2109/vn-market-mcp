@@ -1,11 +1,15 @@
 import os
+import subprocess
+import sys
+from pathlib import Path
 
 import psycopg
 
-from pipeline.jobs import claim_next, enqueue, get_job, mark_done, mark_failed, reclaim_stale_running, release
+from pipeline.jobs import _lock_key, claim_next, enqueue, get_job, mark_done, mark_failed, reclaim_stale_running, release
 from tests.conftest import insert_ticker
 
 DATABASE_URL = os.environ["DATABASE_URL"]
+_ROOT = Path(__file__).parent.parent
 
 
 def _cleanup(ticker: str):
@@ -105,3 +109,31 @@ def test_reclaim_stale_running_requeues_old_jobs_only(db_conn):
         conn.close()
     finally:
         _cleanup("JOBTEST4")
+
+
+def test_lock_key_is_identical_across_processes():
+    """hash() is randomised per process, so two workers used to disagree on the lock for the same job."""
+    code = "from pipeline.jobs import _lock_key; print(_lock_key('HPG', 'on_demand'))"
+    outs = {
+        subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True, cwd=_ROOT).stdout.strip()
+        for _ in range(3)
+    }
+    assert outs == {str(_lock_key("HPG", "on_demand"))}
+
+
+def test_claim_next_prefers_collect_jobs_over_older_analysis_jobs(db_conn):
+    insert_ticker(db_conn, "JOBPRIO")
+    db_conn.commit()
+    conn = psycopg.connect(DATABASE_URL)
+    try:
+        conn.execute("DELETE FROM jobs WHERE status = 'queued'")  # dedicated *_test DB (conftest guards it)
+        conn.commit()
+        enqueue(conn, "JOBPRIO", job_type="on_demand")  # older
+        enqueue(conn, "MARKET", job_type="collect_rss", requested_by="cron")  # newer, but must win
+        job = claim_next(conn)
+        assert job.job_type == "collect_rss"
+        release(conn, job)
+    finally:
+        conn.execute("DELETE FROM jobs WHERE ticker IN ('JOBPRIO', 'MARKET')")
+        conn.commit()
+        conn.close()

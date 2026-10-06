@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 from mcp_server.connection import get_ro_conn
 from mcp_server.envelope import build_envelope
 from pipeline.calendar import NoCalendarDataError, is_trading_day
+from pipeline.news import load_sources
+from pipeline.news_health import news_sources_status, source_warnings
 
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 _SILENT = {"is_trading_day": False, "instruction": "Hôm nay không phải ngày giao dịch: trả lời đúng một chuỗi [SILENT], không viết gì thêm."}
@@ -51,9 +53,19 @@ def _moves(conn, sessions: int) -> list[dict]:
 def _headlines(conn, hours: int, limit: int) -> list[dict]:
     rows = conn.execute(
         f"SELECT published_at, tickers, title, source FROM news_items WHERE published_at >= now() - make_interval(hours => %s)"
-        f" AND tickers && ARRAY({_VN30}) ORDER BY published_at DESC LIMIT %s", (hours, limit),
+        f" AND filter_status IS DISTINCT FROM 'dropped' AND tickers && ARRAY({_VN30}) ORDER BY published_at DESC LIMIT %s",
+        (hours, limit),
     ).fetchall()
     return [{"date": p.strftime("%d/%m %H:%M"), "tickers": t, "title": ti, "source": s} for p, t, ti, s in rows]
+
+
+def _macro_headlines(conn, hours: int, limit: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT published_at, title, source FROM news_items WHERE filter_status = 'kept' AND stream = 'A'"
+        " AND published_at >= now() - make_interval(hours => %s) ORDER BY published_at DESC LIMIT %s",
+        (hours, limit),
+    ).fetchall()
+    return [{"date": p.astimezone(_VN_TZ).strftime("%d/%m %H:%M"), "title": t, "source": s} for p, t, s in rows]
 
 
 def _flow(conn, days: int) -> dict:
@@ -87,13 +99,15 @@ def get_market_digest_input_tool() -> dict:
         if _skip_today(conn, now):
             return build_envelope(dict(_SILENT), sources=["postgres"], as_of=now)
         moves = _moves(conn, 1)
+        status = news_sources_status(conn, now, [s["name"] for s in load_sources()])
         data = {
             "is_trading_day": True, "market": _market(conn), "vn30_last_session": {"gainers": moves[:3], "losers": moves[::-1][:3],
                                                           "advancing": sum(m["change_pct"] > 0 for m in moves),
                                                           "declining": sum(m["change_pct"] < 0 for m in moves)},
             "foreign_flow": _flow(conn, 1), "overnight_headlines": _headlines(conn, 18, 30),
+            "macro_headlines": _macro_headlines(conn, 18, 15), "news_sources": status,
         }
-    return build_envelope(data, sources=["postgres"], as_of=now)
+    return build_envelope(data, sources=["postgres"], as_of=now, warnings=source_warnings(status))
 
 
 def get_weekly_digest_input_tool() -> dict:

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>CafeF Chứng khoán</title><link>http://cafef.test</link><description>fixture</description>
+<item><title>NHNN giảm lãi suất điều hành, thị trường liên ngân hàng hạ nhiệt</title><link>http://cafef.test/a1</link>
+<description>Cùng một bài, nguồn khác.</description><pubDate>Tue, 06 Oct 2026 01:30:00 GMT</pubDate></item>
+<item><title>FPT báo lãi quý III tăng 20%</title><link>http://cafef.test/b1</link><description>Kết quả kinh doanh.</description><pubDate>Tue, 06 Oct 2026 02:00:00 GMT</pubDate></item>
+<item><title>NHNN giảm lãi suất điều hành, thị trường liên ngân hàng hạ nhiệt!</title><link>http://cafef.test/b2</link>
+<description>Bài đăng lại, khác URL.</description><pubDate>Tue, 06 Oct 2026 02:10:00 GMT</pubDate></item>
+</channel></rss>
