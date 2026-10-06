@@ -1,19 +1,18 @@
 """SBV (sbv.gov.vn) official numbers: USD/VND central + reference rates, policy rates, interbank rates.
 
 Two static HTML pages, parsed with regexes on tag-stripped text (see the SBV spike findings). Runs inside
-the hourly collect_rss job, at most every SBV_EVERY_MINUTES on weekdays; health goes to source_health 'sbv'.
+the hourly collect_rss job via pipeline.collectors.indicators (weekdays, at most every SBV_EVERY_MINUTES).
 """
 from __future__ import annotations
 
 import html
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 
 import httpx
 
-from ops.alerting import log_event
 from pipeline.collectors.rss import TIMEOUT_S, USER_AGENT, FeedError
-from pipeline.news_health import VN, record_failure, record_ok
+from pipeline.collectors.indicators import collect
 
 SOURCE = "sbv"
 SBV_EVERY_MINUTES = 180  # the central rate is published in the morning; a few polls a day is plenty
@@ -79,42 +78,10 @@ def _get(client: httpx.Client, url: str) -> str:
     return resp.text
 
 
-def _due(conn, now: datetime) -> bool:
-    if now.astimezone(VN).weekday() >= 5:
-        return False
-    row = conn.execute("SELECT last_ok_at FROM source_health WHERE source = %s", (SOURCE,)).fetchone()
-    return row is None or row[0] is None or now - row[0] >= timedelta(minutes=SBV_EVERY_MINUTES - 5)
+def fetch(client: httpx.Client) -> list[tuple]:
+    rows = [(*r, RATES_URL) for r in parse_rates(_get(client, RATES_URL))]
+    return rows + [(*r, INTEREST_URL) for r in parse_interest(_get(client, INTEREST_URL))]
 
 
 def run_collect_sbv(conn, *, client: httpx.Client | None = None, now: datetime | None = None) -> int:
-    """Returns the number of rows written (new or updated). Never raises: failures land in source_health."""
-    now = now or datetime.now(timezone.utc)
-    if not _due(conn, now):
-        return 0
-    own_client = client is None
-    client = client or httpx.Client()
-    try:
-        rows = [(*r, RATES_URL) for r in parse_rates(_get(client, RATES_URL))]
-        rows += [(*r, INTEREST_URL) for r in parse_interest(_get(client, INTEREST_URL))]
-        with conn.transaction():
-            for indicator, period, value, unit, url in rows:
-                conn.execute(
-                    "INSERT INTO macro_indicators (indicator, period, value, unit, source, source_url, fetched_at)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (indicator, period, source)"
-                    " DO UPDATE SET value = EXCLUDED.value, fetched_at = EXCLUDED.fetched_at",
-                    (indicator, period, value, unit, SOURCE, url, now),
-                )
-        # policy rates carry years-old dates; freshness follows the daily series only
-        newest = max(p for k, p, *_ in rows if k.startswith(("usd_", "interbank_")))
-        record_ok(conn, SOURCE, datetime.combine(newest, datetime.min.time(), VN), now)
-        conn.commit()
-        return len(rows)
-    except Exception as exc:  # a broken SBV page must not take the RSS collection down with it
-        conn.rollback()
-        record_failure(conn, SOURCE, f"{type(exc).__name__}: {exc}", now)
-        conn.commit()
-        log_event("collect_sbv_failed", error=str(exc))
-        return 0
-    finally:
-        if own_client:
-            client.close()
+    return collect(conn, SOURCE, fetch, every_minutes=SBV_EVERY_MINUTES, client=client, now=now)

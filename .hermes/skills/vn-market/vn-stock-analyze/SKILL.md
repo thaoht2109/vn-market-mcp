@@ -74,7 +74,7 @@ Vị thế (`set_position`/`clear_position`) và danh sách theo dõi (`watch_ti
 | "các dự báo còn mở", "dự báo <mã>" | `list_predictions(ticker, status)` (nhãn chung, không theo vị thế) |
 | `/trangthai`, "thống kê", "hit-rate" | `get_stats()` |
 | "thị trường hôm nay", "bản tin sáng", "VN-Index ra sao" | `get_market_digest_input()` |
-| "tin vĩ mô", "lãi suất", "tỷ giá", "chính sách tiền tệ", "tin kinh tế tuần này" | `get_macro_context(days=7)` |
+| "tin vĩ mô", "lãi suất", "tỷ giá", "chính sách tiền tệ", "GDP", "CPI", "lạm phát", "FDI", "giá vàng", "giá dầu", "giá hàng hóa", "tin kinh tế tuần này" | `get_macro_context(days=7)` |
 | "tổng kết tuần", "bản tin tuần" | `get_weekly_digest_input()` |
 | `/theodoi <mã>`, "theo dõi <mã>", "thêm <mã> vào danh sách" | `watch_ticker(ticker)`, rồi chờ `job_id` và báo kết quả đầu tiên |
 | `/bodoi <mã>`, "bỏ theo dõi <mã>" | `unwatch_ticker(ticker)` |
@@ -111,6 +111,6 @@ Các cú pháp `/chay`, `/danhsach`… không phải lệnh đăng ký trong Her
 - **Nhận định đã nói trước đó trong ngày có thể đã cũ**: lịch tự động chạy lại trong phiên và sau phiên. Đọc lại snapshot trước khi nhắc lại; nếu đã đổi, mở đầu bằng phần đính chính.
 - **Thị trường chung**: khối `market` của snapshot có VN-Index (giá, % thay đổi, MA, RSI, xu hướng, trạng thái). Thị trường ở trạng thái rủi ro cao là lý do duy nhất khiến nhãn bị giữ dưới mức mua vì thị trường chứ không vì cổ phiếu — nói bằng lời thường. Số null nghĩa là chưa có dữ liệu chỉ số: nói vậy, không suy ra.
 - **Sửa dữ liệu sai** cần ghi vào DB, việc của người vận hành, không phải của bạn. Báo đúng dòng và giá trị nghi sai cho người vận hành; không nhắc chuyện này với người hỏi về cổ phiếu.
-- **Số liệu vĩ mô** (`get_macro_context` → `indicators`): số chính thức của NHNN, mỗi giá trị có `period` (ngày áp dụng). Khi nêu số, luôn kèm ngày đó và nguồn NHNN; số chính thức thắng số trong tiêu đề báo. Chỉ tiêu không có trong `indicators` (GDP, CPI, FDI, giá hàng hóa) thì nói là chưa có số liệu, không tự điền số.
+- **Số liệu vĩ mô** (`get_macro_context` → `indicators`): mỗi chỉ tiêu có `label` (đọc nhãn để biết đó là gì) và `series` mới nhất trước, mỗi giá trị có `period`. Khi nêu số, luôn kèm kỳ và nguồn: NHNN theo ngày; NSO theo tháng (`period` = ngày đầu tháng) hoặc quý với GDP (`period` = ngày đầu quý), FDI là lũy kế từ đầu năm; hàng hóa là giá hợp đồng tương lai gần nhất, giá của hôm nay có thể chưa phải giá đóng cửa. Số chính thức thắng số trong tiêu đề báo. Muốn nói xu hướng thì so các kỳ trong `series`, không tự nhớ số cũ. Chỉ tiêu không có trong `indicators`, hoặc có cảnh báo trong `warnings`, thì nói rõ là chưa có hoặc chưa cập nhật, không tự điền số.
 - **Tin vĩ mô** (`get_macro_context`, và khối `macro_headlines` của bản tin sáng): chỉ là tiêu đề đã lọc theo trụ cột, chưa có nội dung bài và chưa được tính vào điểm. Dùng để nêu bối cảnh, không để đổi nhãn.
 - **Độ mới của nguồn tin**: nếu `warnings` hoặc `news_sources[].stale` cho biết một nguồn quá hạn, nói rõ "tin từ <nguồn> mới cập nhật đến HH:MM dd/mm". Trụ cột không có tin thì nói "chưa ghi nhận tin" — không bao giờ nói "không có sự kiện" hay "không có tin xấu", vì có thể là nguồn chưa về hoặc tin bị sót.

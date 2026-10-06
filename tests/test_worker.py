@@ -103,7 +103,7 @@ def test_run_one_runs_collect_rss_without_run_analysis(db_conn):
     try:
         with patch("ops.worker.get_vn30_tickers", return_value=["FPT"]), \
              patch("ops.worker.run_collect_rss", return_value={"ok": 1, "failed": 0, "stored": 2}) as collect, \
-             patch("ops.worker.run_collect_sbv", return_value=10) as sbv, \
+             patch("ops.worker.collect_indicators", return_value={"sbv": 10}) as sbv, \
              patch("ops.worker.run_analysis") as analysis:
             assert run_one(db_conn) is True
         collect.assert_called_once()
