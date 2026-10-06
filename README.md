@@ -242,8 +242,12 @@ Scheduler chỉ chạy vào ngày giao dịch. Giờ dưới đây là giờ Vi�
   - Snapshot ghi lại `session.live_label` và `session.official_label`, và báo cáo hiển thị cả hai.
 - **Sau phiên:** `sync_recent_prices` lấy lại 10 ngày gần nhất. Nếu một nến đã chốt lệch với vendor quá 0,1% (dấu hiệu vnstock điều chỉnh giá do cổ tức hoặc chia tách), toàn bộ lịch sử của mã đó được tải lại.
 - **Cache cho chat:**
-  - Trong giờ giao dịch, kết quả được tái sử dụng tối đa `snapshot_cache.max_age_minutes` phút.
-  - Ngoài giờ, chỉ tái sử dụng kết quả chạy **sau** 15:00, có hiệu lực tới phiên kế tiếp.
+  - Cache khớp theo (ticker, style, depth) và dùng chung cho mọi user.
+  - Trong giờ khớp lệnh, kết quả được tái sử dụng tối đa `snapshot_cache.max_age_minutes` phút (15).
+  - Nghỉ trưa (11:30–13:00): kết quả chạy sau 11:30 được dùng đến 13:00, không làm mới vì giá không đổi.
+  - Từ 15:00 đến 15:20: dùng kết quả chạy sau 15:00, vì giá đóng cửa đã chốt.
+  - Ngoài giờ, chỉ tái sử dụng kết quả chạy sau 15:00 + `snapshot_cache.close_settle_minutes` (tức 15:20), có hiệu lực tới phiên kế tiếp.
+  - Nếu đã có job queued/running cùng (ticker, style, depth), request mới nhận lại `job_id` của job đó thay vì tạo job mới.
 
 ## 9. Chấm điểm và nhãn hành động
 

@@ -52,10 +52,11 @@ WEEKLY_TRIGGER = (8, 30)
 WEEKLY_DEPTH = "full"
 
 
-# In-session refresh: Hermes answers from the DB (cache_hit, up to 6 h old per
+# In-session refresh: Hermes answers from the DB (cache_hit, up to max_age_minutes old per
 # vn-rules snapshot_cache) and only a result older than that makes the MCP queue
 # a worker + vnstock call. These fixed VN-time slots (every 2 h while the market
-# is open) keep the DB well inside that window. First slot is 09:15, not 09:00:
+# is open) refresh VN30 levels/labels for alerts; chat freshness comes from on-demand
+# runs, since the cache window is far shorter than a slot. First slot is 09:15, not 09:00:
 # the ATO auction has no matched bar until then. No 15:00 slot: close_sync/post own the close.
 # In-session runs are provisional: they refresh prices and levels but only downgrade labels.
 INTRADAY_JOB_TYPE = "scheduled_intraday"

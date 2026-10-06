@@ -137,3 +137,22 @@ def test_claim_next_prefers_collect_jobs_over_older_analysis_jobs(db_conn):
         conn.execute("DELETE FROM jobs WHERE ticker IN ('JOBPRIO', 'MARKET')")
         conn.commit()
         conn.close()
+
+
+def test_claim_next_prefers_on_demand_over_older_scheduled_jobs(db_conn):
+    insert_ticker(db_conn, "JOBPRIO")
+    insert_ticker(db_conn, "JOBSCHED")
+    db_conn.commit()
+    conn = psycopg.connect(DATABASE_URL)
+    try:
+        conn.execute("DELETE FROM jobs WHERE status = 'queued'")  # dedicated *_test DB (conftest guards it)
+        conn.commit()
+        enqueue(conn, "JOBSCHED", job_type="scheduled_post", requested_by="cron")  # older
+        enqueue(conn, "JOBPRIO", job_type="on_demand")  # newer, but a user is waiting
+        job = claim_next(conn)
+        assert job.job_type == "on_demand"
+        release(conn, job)
+    finally:
+        conn.execute("DELETE FROM jobs WHERE ticker IN ('JOBPRIO', 'JOBSCHED')")
+        conn.commit()
+        conn.close()

@@ -12,8 +12,8 @@ import psycopg
 # died) — safe to requeue rather than leave it stuck forever.
 STALE_RUNNING_AFTER = timedelta(minutes=15)
 
-# Market-wide collection jobs: claimed before analysis jobs so they are not stuck behind the ~30
-# tickers queued at 15:05-15:30.
+# Claim order: market-wide collection jobs (one quick job, must not sit behind the ~30 tickers
+# queued at 15:05-15:30), then on_demand (a user is waiting in chat), then scheduled jobs.
 COLLECT_RSS_JOB_TYPE = "collect_rss"
 COLLECT_JOB_TYPES = (COLLECT_RSS_JOB_TYPE,)
 
@@ -90,7 +90,7 @@ def claim_next(conn: psycopg.Connection) -> Job | None:
     row = conn.execute(
         "SELECT id, job_key, job_type, ticker, style, depth, requested_by, attempts"
         " FROM jobs WHERE status = 'queued'"
-        " ORDER BY (job_type = ANY(%s::text[])) DESC, created_at LIMIT 20",
+        " ORDER BY (job_type = ANY(%s::text[])) DESC, (job_type = 'on_demand') DESC, created_at LIMIT 20",
         (list(COLLECT_JOB_TYPES),),
     ).fetchall()
     for job_id, job_key, job_type, ticker, style, depth, requested_by, attempts in row:
