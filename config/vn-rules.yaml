@@ -63,7 +63,12 @@ snapshot_cache:
   # §4.4: ngưỡng tái sử dụng snapshot của cron cho yêu cầu chat, khi đang
   # trong giờ giao dịch. Ngoài giờ, cache có hiệu lực đến phiên kế tiếp
   # (không dùng max_age_minutes_off_hours — xử lý qua is_trading_hours()).
-  max_age_minutes: 360
+  # 15 phút: mỗi run on_demand lấy giá mới từ vnstock, nên tuổi của run = độ trễ giá
+  # user nhận. Dài hơn thì giá trong phiên cũ; ngắn hơn thì tốn quota vnstock mà giá ít đổi.
+  max_age_minutes: 15
+  # Ngoài giờ chỉ dùng run tạo sau 15:00 + N phút: sau close_sync (15:05) chốt nến và
+  # khối ngoại, trùng mốc scheduled_post 15:20 ra nhận định chính thức.
+  close_settle_minutes: 20
 
 lot_size: 100
 
