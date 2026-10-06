@@ -147,8 +147,9 @@ def get_weekly_digest_input() -> dict[str, Any]:
 
 @mcp.tool()
 def get_macro_context(days: int = 7) -> dict[str, Any]:
-    """Số liệu chính thức NHNN (`indicators`: tỷ giá trung tâm/tham khảo USD, lãi suất điều hành, liên ngân hàng;
-    mỗi chỉ tiêu tối đa 10 kỳ gần nhất, có ngày áp dụng) và tin vĩ mô đã lọc theo 7 trụ cột (tiền tệ, tỷ giá, tăng trưởng, lạm phát, tài khóa, thị trường vốn, toàn cầu)
+    """Số liệu vĩ mô dạng số (`indicators`, mỗi chỉ tiêu có `label` và tối đa 10 kỳ gần nhất kèm `period`):
+    NHNN (tỷ giá trung tâm/tham khảo USD, lãi suất điều hành, liên ngân hàng), NSO (GDP quý, CPI, lạm phát cơ bản,
+    FDI đăng ký/thực hiện), giá hàng hóa (vàng, dầu Brent/WTI, đồng, quặng sắt, thép HRC, vàng SJC); và tin vĩ mô đã lọc theo 7 trụ cột (tiền tệ, tỷ giá, tăng trưởng, lạm phát, tài khóa, thị trường vốn, toàn cầu)
     trong N ngày (1-30), kèm độ mới của từng nguồn tin. Nguồn quá hạn có cảnh báo: không có tin ≠ không có sự kiện."""
     return get_macro_context_tool(days)
 
