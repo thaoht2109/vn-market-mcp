@@ -277,7 +277,7 @@ Nhãn theo vị thế được áp dụng ở `get_snapshot`, `get_stock_report`
 | `set_position`, `clear_position` | Khai báo hoặc xóa trạng thái "đang nắm giữ" của người đang chat (khóa `(ticker, declared_by)` = `VNMCP_USER_ID`). Không làm thay đổi nhãn chung hay nhãn người khác thấy. Nhóm chung: `no_personal_scope` |
 | `watch_ticker`, `unwatch_ticker`, `list_watchlist` | Danh sách theo dõi riêng từng người (`watchlist_extra`, khóa `(ticker, added_by)`). `watch_ticker` tự đăng ký mã niêm yết, xếp hàng một lần phân tích ngay, và đưa mã vào danh sách theo lịch. `list_watchlist` trả nhãn mới nhất theo vị thế người gọi, kèm `holding_state` |
 | `get_market_digest_input`, `get_weekly_digest_input` | Dữ liệu đầu vào cho bản tin trước phiên và bản tin tuần |
-| `get_macro_context` | Tin vĩ mô đã lọc theo 7 trụ cột trong N ngày, kèm độ mới của từng nguồn tin (nguồn quá hạn có cảnh báo) |
+| `get_macro_context` | Số liệu chính thức NHNN (tỷ giá trung tâm và tham khảo USD/VND, lãi suất tái cấp vốn/tái chiết khấu, liên ngân hàng qua đêm–3 tháng) kèm ngày áp dụng; tin vĩ mô đã lọc theo 7 trụ cột trong N ngày, kèm độ mới của từng nguồn tin (nguồn quá hạn có cảnh báo) |
 
 Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trường hợp:
 
@@ -485,3 +485,4 @@ Các thay đổi lớn về cách dùng nhiều người (tháng 10/2026), mới
 | Worker chỉ gửi cảnh báo vận hành; Hermes trả lời mọi job theo yêu cầu, kể cả lần đầu của `watch_ticker` | `017` | Bỏ bảng `users` (tạo ở `016`) và token bot riêng phía worker |
 | Cấu hình Docker chuyển vào `infrastructure/`, mọi giá trị phụ thuộc máy khai báo trong `infrastructure/.env` | — | Thêm `COMPOSE_FILE` vào `.env` gốc và tạo `infrastructure/.env`; tên project cố định `vn-market-mcp` nên volume DB và mạng Hermes không đổi |
 | Thu thập tin RSS vĩ mô và doanh nghiệp, lọc bằng quy tắc, theo dõi độ mới nguồn; tool `get_macro_context`; sửa khóa job không ổn định giữa worker, partition `news_items` tự gia hạn, lỗi tin vnstock không còn bị nuốt | `018` | Thêm `feedparser` (cần build lại image) và `ADMIN_DATABASE_URL` cho scheduler; sau migration chạy lại `python -m db.setup_roles`; restart Hermes gateway để nạp tool mới |
+| Thu số liệu NHNN (tỷ giá, lãi suất) từ sbv.gov.vn trong job `collect_rss`, tối đa 3 giờ/lần, thứ 2–6; khối `indicators` trong `get_macro_context` | `019` | Sau migration chạy lại `python -m db.setup_roles`; sandbox/firewall cần cho phép `sbv.gov.vn` |
