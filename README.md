@@ -1,6 +1,28 @@
 # vn-market-mcp
 
-Đường ống dữ liệu và phân tích cổ phiếu Việt Nam, cung cấp kết quả cho trợ lý chat **Hermes** qua giao thức **MCP**. Hệ thống phân tích VN30 cùng mọi mã niêm yết mà người dùng yêu cầu hoặc theo dõi. Nhiều người dùng có thể dùng chung một hệ thống, mỗi người một bot Telegram riêng, mà dữ liệu cá nhân (vị thế, danh sách theo dõi, bộ nhớ và lịch sử chat) không bị chia sẻ cho nhau.
+**Hệ thống dữ liệu và phân tích cổ phiếu Việt Nam cho trợ lý AI, kết nối qua Model Context Protocol (MCP).**
+
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![MCP](https://img.shields.io/badge/MCP-stdio-000000)
+
+`vn-market-mcp` tự động thu thập giá, báo cáo tài chính, dòng tiền khối ngoại, tin tức và số liệu vĩ mô; tính chỉ báo, chấm điểm và gán nhãn hành động cho VN30 cùng mọi mã niêm yết người dùng quan tâm. Kết quả được cung cấp cho trợ lý chat [Hermes](https://github.com/NousResearch/hermes-agent) qua 17 tool MCP, để người dùng hỏi đáp và nhận báo cáo ngay trên Telegram.
+
+Mọi con số đều do code tính và kiểm chứng được; mô hình ngôn ngữ chỉ diễn giải, không bao giờ tự chọn nhãn hay bịa số liệu.
+
+## Tính năng chính
+
+- **Phân tích cổ phiếu tất định:** chỉ báo kỹ thuật (MA, MACD, RSI), định giá so với lịch sử và cùng ngành, dòng tiền khối ngoại, trạng thái thị trường → điểm tổng hợp, nhãn hành động (`buy_accumulate` / `watch` / `hold` / `reduce_exit` / `stay_out`) và kế hoạch rủi ro có stop-loss.
+- **Đúng nhịp phiên giao dịch:** làm mới số liệu tạm tính trong phiên, chốt kết luận chính thức trên giá đóng cửa, tự phát hiện điều chỉnh giá do cổ tức hoặc chia tách.
+- **Số liệu vĩ mô dạng số:** tỷ giá và lãi suất NHNN; GDP, CPI, lạm phát cơ bản, FDI từ Tổng cục Thống kê; giá vàng, dầu, đồng, quặng sắt, thép và vàng SJC. Mỗi số kèm kỳ, nguồn và chuỗi lịch sử.
+- **Tin tức có chọn lọc:** thu RSS mỗi giờ, lọc theo 7 trụ cột vĩ mô và theo doanh nghiệp, theo dõi độ mới của từng nguồn.
+- **Nhiều người dùng, dữ liệu tách riêng:** mỗi người một bot Telegram; vị thế, danh sách theo dõi và lịch sử chat không chia sẻ cho nhau, trong khi mỗi mã chỉ phân tích một lần cho tất cả.
+- **Kiểm soát đầu ra của AI:** phần "Nhận định" do Hermes viết phải qua bộ kiểm tra tất định (không số lạ, không lạc quan hơn nhãn hệ thống) trước khi lưu hoặc gửi.
+- **Fail-closed và tự đánh giá:** thiếu dữ liệu thì báo rõ thay vì đoán; dự báo được chấm lại ở mốc 20/60/120 phiên; lỗi vận hành được cảnh báo về nhóm ops.
+- **Triển khai gọn:** Docker Compose (Postgres, worker, scheduler, grading, retention), phân quyền DB theo vai trò, migration có đánh số.
+
+Cài đặt: xem [mục 5](#5-cài-đặt). Danh sách tool MCP: xem [mục 10](#10-mcp-server-và-hermes).
 
 > **Tuyên bố miễn trừ:** Đây là công cụ hỗ trợ nghiên cứu, **không phải tư vấn đầu tư** và **không tự đặt lệnh**. Mọi rủi ro giao dịch do người dùng tự chịu.
 
