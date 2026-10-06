@@ -87,8 +87,8 @@ Các cú pháp `/chay`, `/danhsach`… không phải lệnh đăng ký trong Her
 ## Quy trình phân tích một mã
 
 1. **`run_analysis`**:
-   - `status="cache_hit"` (`job_id` null, có `run_id`): kết quả lưu sẵn còn hiệu lực (trong phiên tối đa 6 giờ; ngoài giờ tới phiên kế tiếp). Đi thẳng bước 2. Không nghi ngờ hay bắt chạy lại.
-   - `status="queued"`: gọi `get_job_status(job_id)` khoảng mỗi 3 giây cho tới `done` (thường 3 giây, chậm nhất khoảng 40 giây; mã mới lần đầu có thể lâu hơn vì phải tải lịch sử). Không `sleep` dài, không chạy tiến trình nền để chờ. Nếu người dùng hỏi sao lâu: "đang tổng hợp dữ liệu".
+   - `status="cache_hit"` (`job_id` null, có `run_id`): kết quả lưu sẵn còn hiệu lực (đang khớp lệnh tối đa 15 phút; nghỉ trưa tới 13:00; sau đóng cửa tới phiên kế tiếp). Đi thẳng bước 2. Không nghi ngờ hay bắt chạy lại.
+   - `status="queued"` hoặc `"running"` (đã có job cùng mã đang chạy, dùng chung): gọi `get_job_status(job_id)` khoảng mỗi 3 giây cho tới `done` (thường 3 giây, chậm nhất khoảng 40 giây; mã mới lần đầu có thể lâu hơn vì phải tải lịch sử). Không `sleep` dài, không chạy tiến trình nền để chờ. Nếu người dùng hỏi sao lâu: "đang tổng hợp dữ liệu".
    - Nhiều mã trong một tin, hoặc yêu cầu mới tới khi việc cũ chưa xong: mỗi mã một job riêng, theo dõi từng `job_id`, báo mỗi kết quả đúng một lần theo thứ tự yêu cầu.
    - Job `failed`: đọc `error`. `unknown_ticker` = mã không niêm yết (sai mã hoặc đã hủy niêm yết), nêu gợi ý "gần giống" nếu có, không phân tích từ hiểu biết bên ngoài. `insufficient_coverage` = mã thiếu lịch sử giá, thanh khoản hoặc báo cáo tài chính theo ngưỡng của hệ thống — nói đúng vậy, không tự đánh giá mã.
 2. **`get_stock_report(ticker, run_id)`** trước mọi thứ khác. Báo cáo số liệu do code dựng, đầy đủ — không rút gọn, không bỏ dòng.
