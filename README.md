@@ -508,10 +508,10 @@ Toàn bộ trạng thái Hermes nằm ở `~/.hermes` trên host (bind mount và
 
 Bản zip khoảng 100 MB, không gồm mã nguồn Hermes và các package trong venv MCP (dựng lại khi khởi động). File chứa token bot, khóa API và hội thoại của người dùng. Script đặt quyền 600, và **phải mã hóa trước khi đưa ra khỏi máy**: `gpg -c <file>.zip`. Đừng đưa `~/.hermes` vào git, vì dữ liệu này đổi liên tục, có file SQLite và có secrets.
 
-Chạy cả hai bản sao lưu hằng ngày lúc 19:00, sau phiên giao dịch và lần thử lại `close_sync` (`crontab -e` trên host):
+Chạy cả hai bản sao lưu hằng ngày lúc 23:00, khi hệ thống đã xong việc trong ngày (`crontab -e` trên host):
 
 ```
-0 19 * * * cd /home/anm/0_Projects/thaoht/99.CK/vn-market-mcp && { ./ops/backup.sh; ./ops/backup_hermes.sh; } >> ~/backups/backup.log 2>&1
+0 23 * * * cd /home/anm/0_Projects/thaoht/99.CK/vn-market-mcp && { ./ops/backup.sh; ./ops/backup_hermes.sh; } >> /home/anm/backups/backup.log 2>&1
 ```
 
 **Chuyển server có kế hoạch** (máy cũ còn chạy): chép nguyên thư mục, không cần `hermes import`.
