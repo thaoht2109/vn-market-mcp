@@ -250,7 +250,7 @@ Scheduler chỉ chạy vào ngày giao dịch. Giờ dưới đây là giờ Vi�
 | Giờ | Job | Mô tả |
 |---|---|---|
 | 08:30 | `macro_premarket` | Bản tin vĩ mô trước phiên. **Chỉ chạy khi** `llm.pipeline_enabled: true` |
-| 09:15, 11:00, 13:00 | `scheduled_intraday` | Làm mới số liệu trong phiên (**tạm tính**) cho danh sách theo lịch. Mốc đầu là 09:15 vì phiên ATO chưa có nến khớp |
+| 09:30, 11:00, 13:00 | `scheduled_intraday` | Làm mới số liệu trong phiên (**tạm tính**) cho danh sách theo lịch. Mốc đầu là 09:30: ATO khớp lúc 09:15 nhưng vnstock chưa có nến ngày hôm nay ngay sau đó |
 | 09:15–11:30 và 13:15–14:45, mỗi 15 phút | `alert_check` | Lấy giá mọi mã có người theo dõi hoặc nắm giữ trong **một** lần gọi `price_board`, gửi cảnh báo giá "chạm trong phiên" (xem "Cảnh báo giá") |
 | 15:05 | `close_sync` | Ghi đè nến giữa phiên bằng giá đóng cửa, chốt khối ngoại, phát hiện vendor điều chỉnh giá. Áp dụng cho mọi mã có nến trong 10 ngày gần nhất |
 | 15:20 | `scheduled_post` | **Kết luận chính thức** trong ngày cho danh sách theo lịch, tính trên giá đóng cửa |
@@ -262,7 +262,7 @@ Scheduler chỉ chạy vào ngày giao dịch. Giờ dưới đây là giờ Vi�
 
 ## 8. Xử lý dữ liệu theo phiên
 
-- **Phiên mới nhất** (`latest_trading_day`) được tính theo giờ Việt Nam. Trước 09:15, phiên mới nhất là phiên **trước đó**, nên chạy lúc 08:30 không còn báo thiếu dữ liệu ngày hôm nay.
+- **Phiên mới nhất** (`latest_trading_day`) được tính theo giờ Việt Nam. Trước 09:30, phiên mới nhất là phiên **trước đó**, nên chạy lúc 08:30 không còn báo thiếu dữ liệu ngày hôm nay.
 - **Trong phiên** (`is_provisional_session`): nến hôm nay là ảnh chụp tạm thời. `provisional_label` áp dụng các quy tắc sau:
   - Chỉ **hạ** nhãn về `reduce_exit`/`stay_out` khi giá thủng stop hoặc biến động vượt 2 ATR.
   - **Không bao giờ nâng** lên mua trước giờ đóng cửa.
@@ -546,7 +546,7 @@ Repo đặt ở đường dẫn khác thì khai báo `VN_MARKET_MCP_DIR`; script
 
 | Triệu chứng | Nguyên nhân / cách xử lý |
 |---|---|
-| `data_quality_error: missing_tickers` lúc trước 09:15 | Đã sửa: trước 09:15 hệ thống dùng phiên trước. Nếu vẫn gặp, kiểm tra lịch giao dịch đã được seed tới hôm nay chưa |
+| `data_quality_error: missing_tickers` lúc trước 09:30 | Đã sửa: trước 09:30 hệ thống dùng phiên trước (lúc 09:15 vnstock chưa có nến hôm nay). Nếu vẫn gặp, kiểm tra lịch giao dịch đã được seed tới hôm nay chưa |
 | `insufficient_coverage` với mã mới | Lần chạy đầu đã tự tải khoảng 3 năm giá. Nếu vẫn báo lỗi thì mã chưa đủ 500 phiên niêm yết, thanh khoản 20 phiên dưới 5 tỷ, hoặc chưa đủ 4 quý BCTC: đúng thiết kế, không phải lỗi |
 | `unknown_ticker` | Mã không có trong danh sách niêm yết của vnstock (gõ sai, đã hủy niêm yết). Xem gợi ý trong cảnh báo |
 | `data_quality_error` với mã ít giao dịch | Phiên hôm nay mã không có giao dịch nên thiếu nến. Chạy lại ở phiên có giao dịch |
