@@ -280,6 +280,17 @@ class VNStockProvider:
             )
         return records
 
+    def get_last_prices(self, tickers: list[str]) -> dict[str, float]:
+        """Last matched price (full VND) of every ticker in ONE price-board call — price alerts
+        check all watched tickers every 15 min, so one call per ticker would burn the rate limit.
+        A ticker with no match yet (price 0) is left out."""
+        # ponytail: one request for the whole list; chunk it if KBS ever caps the board size.
+        board = self._trading().price_board(symbols_list=tickers)
+        return {
+            str(row["symbol"]): float(row["close_price"])
+            for row in board.to_dict("records") if row.get("close_price")
+        }
+
     def get_foreign_flow(self, ticker: str, start: date, end: date) -> list[ForeignFlowRecord]:
         """vnstock>=4 removed the historical foreign-trade endpoint entirely
         (old stock.trading.foreign_trade has no vnstock.api equivalent).

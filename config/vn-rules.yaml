@@ -96,3 +96,8 @@ llm:
   # computes the deterministic indicators/label. Hermes (chat) is then the only LLM consumer,
   # and only when a user asks. true = restore news digest, bull/bear/verifier, synthesis, macro digest.
   pipeline_enabled: false
+
+price_alerts:
+  # Vùng đệm chống báo lặp: giá đã vào vùng mua / chạm cắt lỗ / đạt mục tiêu phải ra khỏi mốc
+  # thêm 1% mới được tính là đã rời, nên giá lắc quanh mốc chỉ báo một lần (pipeline/price_alerts.py).
+  rearm_pct: 0.01
