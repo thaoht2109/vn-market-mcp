@@ -1,0 +1,88 @@
+# Hermes stack for vn-market-mcp (gateway + MCP venv init + dashboard). Kept in this repo so a new
+# machine can rebuild it; derived from github.com/DeployFaith/hermes-docker-compose plus the
+# mcp-venv-init service and the vn-market-mcp network/mount. Same project name as the original
+# checkout, so on this machine it manages the very same containers.
+#   docker compose -f infrastructure/hermes-compose.yml up -d
+name: hermes-docker-compose
+
+services:
+  # ---------------------------------------------------------------------------
+  # MCP venv init — builds the vn-market-mcp dependency venv (incl. vnstock)
+  # on the data volume before the gateway starts, so run-vn-market-mcp has a
+  # reproducible environment instead of a hand-built one. Exits when done.
+  # ---------------------------------------------------------------------------
+  mcp-venv-init:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-mcp-venv-init
+    entrypoint: ["/bin/sh", "/opt/vn-market-mcp/ops/setup_venv.sh"]
+    volumes:
+      - ${HERMES_DATA_DIR:-${HOME:-/root}/.hermes}:/opt/data
+      - ${VN_MARKET_MCP_DIR:-..}:/opt/vn-market-mcp:ro
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Hermes Gateway — core agent runtime & API
+  # ---------------------------------------------------------------------------
+  gateway:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-gateway
+    command: gateway run
+    restart: unless-stopped
+    depends_on:
+      mcp-venv-init:
+        condition: service_completed_successfully
+    ports:
+      - "${GATEWAY_PORT:-8642}:8642"
+    volumes:
+      - ${HERMES_DATA_DIR:-${HOME:-/root}/.hermes}:/opt/data
+      - ${VN_MARKET_MCP_DIR:-..}:/opt/vn-market-mcp:ro
+    shm_size: 1g
+    networks:
+      - hermes-net
+      - vn-market-mcp_default
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8642/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Hermes Dashboard — web UI for managing the agent
+  # ---------------------------------------------------------------------------
+  dashboard:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-dashboard
+    command: dashboard --host 0.0.0.0 --insecure
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    ports:
+      - "${DASHBOARD_PORT:-9120}:9119"
+    environment:
+      GATEWAY_HEALTH_URL: http://hermes-gateway:8642
+    networks:
+      - hermes-net
+
+  # ---------------------------------------------------------------------------
+  # Watchtower (opt-in) — auto-update hermes containers
+  # ---------------------------------------------------------------------------
+  # Uncomment the block below to enable automatic image updates via Watchtower.
+  # It will watch every container on this compose project and pull new images
+  # when available, then restart them seamlessly.
+  #
+  # watchtower:
+  #   image: containrrr/watchtower:latest
+  #   container_name: hermes-watchtower
+  #   restart: unless-stopped
+  #   command: --label-enable --cleanup
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   networks:
+  #     - hermes-net
+
+networks:
+  hermes-net:
+    driver: bridge
+  vn-market-mcp_default:
+    external: true

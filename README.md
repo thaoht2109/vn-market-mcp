@@ -118,7 +118,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `pipeline/jobs.py`, `pipeline/grading.py` | Hàng đợi job, chấm dự báo |
 | `pipeline/price_alerts.py` | Cảnh báo giá theo mốc của nhận định chính thức (xem "Cảnh báo giá") |
 | `mcp_server/` | MCP server và 18 tool; `identity.py` xác định người gọi (`VNMCP_USER_ID`) |
-| `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, backup, `add_user.sh` / `remove_user.sh` (thêm / xóa người dùng), `pending_alerts.py` + `setup_alerts_cron.sh` (gửi cảnh báo giá qua cron Hermes) |
+| `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, `backup.sh` (DB) / `backup_hermes.sh` (toàn bộ `~/.hermes`), `add_user.sh` / `remove_user.sh` (thêm / xóa người dùng), `pending_alerts.py` + `setup_alerts_cron.sh` (gửi cảnh báo giá qua cron Hermes) |
 | `db/` | Migrations (`001`–`020`), tạo role, tạo DB test |
 | `llm/`, `schemas/` | Các vai trò LLM trong pipeline (đang **tắt**, giữ lại để bật sau) |
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
@@ -126,7 +126,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `tests/` | Test pytest, chạy bằng `./run_tests.sh` từ host. Không đưa vào image |
 | `.hermes/skills/vn-market/vn-stock-analyze/` | Skill duy nhất cho phân tích cổ phiếu VN: định tuyến câu hỏi sang tool MCP, giọng văn, quy trình báo cáo. Dùng chung, chỉ đọc cho mọi profile |
 | `config/` | `vn-rules.yaml` (ngưỡng nghiệp vụ), `models.yaml` (mô hình LLM) |
-| `infrastructure/` | `docker-compose.yml`, `Dockerfile` (+ `.dockerignore`), `.env.example`: toàn bộ cấu hình Docker, mọi giá trị phụ thuộc máy (cổng, đường dẫn, tên project, số worker) khai báo qua `infrastructure/.env` |
+| `infrastructure/` | `docker-compose.yml`, `Dockerfile` (+ `.dockerignore`), `.env.example`, `hermes-compose.yml` (stack Hermes: gateway, `mcp-venv-init`, dashboard): toàn bộ cấu hình Docker, mọi giá trị phụ thuộc máy (cổng, đường dẫn, tên project, số worker) khai báo qua `infrastructure/.env` |
 
 ## 4. Yêu cầu
 
@@ -341,7 +341,7 @@ Bộ kiểm tra `verify_commentary` từ chối "Nhận định" trong các trư
 - Dùng thuật ngữ nội bộ.
 - Độ dài ngoài khoảng 80–220 từ.
 
-**Kết nối Hermes** (container `hermes-gateway`, dựng bằng file compose riêng của Hermes, ngoài repo này; `~/.hermes` trên host là `/opt/data` trong container):
+**Kết nối Hermes** (container `hermes-gateway`, dựng bằng `infrastructure/hermes-compose.yml`; `~/.hermes` trên host là `/opt/data` trong container):
 
 - Gateway mount dự án này ở chế độ chỉ đọc tại `/opt/vn-market-mcp` và tham gia mạng `vn-market-mcp_default`. URL kết nối DB phải dùng `postgres:5433`, **không** dùng `5432` vì cổng này bị một rule iptables trên host chặn.
 - Venv riêng nằm ở `/opt/data/vn-market-mcp-venv`, được dựng bởi `ops/setup_venv.sh` (init container `mcp-venv-init`).
@@ -480,12 +480,67 @@ Có thể kiểm thử không cần Hermes bằng MCP Inspector: `npx @modelcont
 
 ## 13. Sao lưu và khôi phục
 
+### Database
+
 ```bash
-./ops/backup.sh         # pg_dump vào ./backups/
-./ops/restore_test.sh   # khôi phục bản mới nhất vào DB tạm, so số dòng, rồi xóa
+./ops/backup.sh         # pg_dump → ~/backups/db/vnmcp_<thời điểm>.dump, giữ 14 bản mới nhất
+./ops/restore_test.sh   # khôi phục bản mới nhất vào DB tạm, kiểm tra các bảng chính có dữ liệu, rồi xóa
 ```
 
-Cần client `pg_dump` phiên bản 16. Nếu host khác phiên bản, chạy trong container `postgres`.
+- Cả hai script chạy `pg_dump`/`pg_restore` **trong container `postgres`**, nên không phụ thuộc phiên bản client trên host (host đang có `pg_dump` 12, không dump được server 16).
+- Dump ghi ra file `.part` trước, xong mới đổi tên: dump lỗi không bao giờ thành bản sao lưu và không đẩy bản tốt ra khỏi vòng giữ.
+- Dump không chứa role. Khi khôi phục, dùng `--no-owner --no-acl`, rồi chạy `python -m db.setup_roles` để tạo lại `mcp_ro`, `pipeline_rw`, `retention_job` và cấp quyền.
+- File dump có danh mục, vị thế của người dùng: quyền 600, mã hóa (`gpg -c`) trước khi đưa ra khỏi máy.
+
+### Tri thức của Hermes
+
+Toàn bộ trạng thái Hermes nằm ở `~/.hermes` trên host (bind mount vào `/opt/data`), không nằm trong container: xóa, tạo lại hay nâng cấp image `hermes-gateway` không mất gì. Chỉ mất khi mất máy hoặc ổ đĩa, nên cần bản sao ra ngoài máy.
+
+| Nằm ở đâu | Gồm | Cách giữ |
+|---|---|---|
+| Repo này (GitHub) | Skill dùng chung `.hermes/skills/`, wrapper MCP, `infrastructure/hermes-compose.yml`, script tạo cron cảnh báo | `git push` |
+| `~/.hermes` | `config.yaml`, `.env` (token bot, khóa API), `SOUL.md`, `memories/`, skill Hermes tự học, cron, lịch sử hội thoại (`state.db`) của `default` và mọi profile | `ops/backup_hermes.sh` |
+| Postgres | Danh mục, vị thế, lựa chọn cảnh báo của từng người, lịch sử phân tích | `ops/backup.sh` |
+
+```bash
+./ops/backup_hermes.sh   # hermes backup → ~/backups/hermes/hermes-backup-<thời điểm>.zip, giữ 7 bản mới nhất
+```
+
+Bản zip khoảng 100 MB, không gồm mã nguồn Hermes và các package trong venv MCP (dựng lại khi khởi động). File chứa token bot, khóa API và hội thoại của người dùng. Script đặt quyền 600, và **phải mã hóa trước khi đưa ra khỏi máy**: `gpg -c <file>.zip`. Đừng đưa `~/.hermes` vào git, vì dữ liệu này đổi liên tục, có file SQLite và có secrets.
+
+Chạy cả hai bản sao lưu hằng ngày lúc 23:00, khi hệ thống đã xong việc trong ngày (`crontab -e` trên host):
+
+```
+0 23 * * * cd /home/anm/0_Projects/thaoht/99.CK/vn-market-mcp && { ./ops/backup.sh; ./ops/backup_hermes.sh; } >> /home/anm/backups/backup.log 2>&1
+```
+
+**Chuyển server có kế hoạch** (máy cũ còn chạy): chép nguyên thư mục, không cần `hermes import`.
+
+```bash
+# máy cũ: dừng Hermes để state.db (SQLite) không bị chép dở khi đang ghi
+docker compose -f infrastructure/hermes-compose.yml stop
+sudo rsync -aHAX --exclude hermes-agent/ ~/.hermes/ user@server-moi:/duong-dan/hermes-data/   # -a giữ owner uid 10000
+# máy mới (sau bước 1 bên dưới)
+HERMES_DATA_DIR=/duong-dan/hermes-data docker compose -f infrastructure/hermes-compose.yml up -d
+```
+
+Không đồng bộ liên tục `~/.hermes` khi gateway đang chạy (rsync theo lịch, Syncthing, ổ mạng), vì `state.db` có thể bị chép dở. Bind mount chỉ nối container với ổ đĩa của chính máy đó, không thay được bản sao ngoài máy.
+
+**Chuyển sang máy mới từ bản zip** (máy cũ hỏng):
+
+1. Cài Docker, clone repo này, tạo `.env` và `infrastructure/.env` (cùng mật khẩu role như máy cũ), rồi khôi phục DB:
+   ```bash
+   docker compose up -d postgres
+   docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-acl --exit-on-error' < vnmcp_<thời điểm>.dump
+   set -a; . ./.env; set +a; python -m db.setup_roles
+   docker compose up -d
+   ```
+2. Giải mã bản zip, chép vào `~/.hermes/`, rồi chạy `docker compose -f infrastructure/hermes-compose.yml up -d`.
+3. `docker exec -u hermes hermes-gateway hermes import --force /opt/data/<file>.zip`. Zip phải nằm trong `~/.hermes`, để user `hermes` trong container đọc được.
+4. `docker compose -f infrastructure/hermes-compose.yml up -d --force-recreate`: `mcp-venv-init` cài lại package cho venv MCP, gateway nạp lại profile, bot và cron.
+5. Kiểm tra: `docker exec hermes-gateway hermes -p <tên> mcp test vn-market-mcp`, `hermes -p <tên> cron list`.
+
+Repo đặt ở đường dẫn khác thì khai báo `VN_MARKET_MCP_DIR`; script cron trong profile gọi `/opt/vn-market-mcp` bên trong container nên không phụ thuộc đường dẫn trên host.
 
 ## 14. Xử lý sự cố
 
