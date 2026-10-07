@@ -83,7 +83,7 @@ def test_intraday_slot_fires_during_the_session_only():
     def utc(h, m, day=2):  # 2026-10-02 is a Friday
         return datetime(2026, 10, day, h, m, tzinfo=timezone.utc)
 
-    assert [intraday_slot(utc(h, m)) for h, m in ((2, 15), (4, 0), (6, 0))] == ["0915", "1100", "1300"]
+    assert [intraday_slot(utc(h, m)) for h, m in ((2, 30), (4, 0), (6, 0))] == ["0930", "1100", "1300"]
     assert intraday_slot(utc(8, 0)) is None          # 15:00 VN: close_sync/post own the close
     assert intraday_slot(utc(2, 0)) is None          # 09:00 VN, ATO — no bar yet
     assert intraday_slot(utc(5, 0)) is None          # 12:00 VN lunch break

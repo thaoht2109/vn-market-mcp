@@ -56,11 +56,11 @@ WEEKLY_DEPTH = "full"
 # vn-rules snapshot_cache) and only a result older than that makes the MCP queue
 # a worker + vnstock call. These fixed VN-time slots (every 2 h while the market
 # is open) refresh VN30 levels/labels for alerts; chat freshness comes from on-demand
-# runs, since the cache window is far shorter than a slot. First slot is 09:15, not 09:00:
-# the ATO auction has no matched bar until then. No 15:00 slot: close_sync/post own the close.
+# runs, since the cache window is far shorter than a slot. First slot is 09:30, not 09:00/09:15:
+# vnstock has no bar for today until shortly after the 09:15 ATO match (pipeline/calendar.py). No 15:00 slot: close_sync/post own the close.
 # In-session runs are provisional: they refresh prices and levels but only downgrade labels.
 INTRADAY_JOB_TYPE = "scheduled_intraday"
-INTRADAY_SLOTS = {(9, 15), (11, 0), (13, 0)}
+INTRADAY_SLOTS = {(9, 30), (11, 0), (13, 0)}
 
 # After the close (15:05 VN, ahead of scheduled_post at 15:20): overwrite every bar stored
 # mid-session with its closing OHLCV, detect vendor price re-basing and settle foreign flow,

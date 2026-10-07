@@ -49,16 +49,18 @@ def is_trading_day(conn: psycopg.Connection, d: date) -> bool:
     return row[0]
 
 
-# First continuous-matching tick (09:00 ATO + 15 min): before it, today's
-# session has no bar yet. Real 2026-10-05 incident: an 08:32 Monday run picked
-# today, vnstock returned only Sep 30..Oct 2, and completeness failed.
-# ponytail: mirrors vn-rules.yaml trading_hours.morning_start; pass it in if it ever changes.
-_FIRST_BAR_TIME = time(9, 15)
+# When vnstock's daily history first has today's bar. ATO matches at 09:15, but the bar is not
+# there yet right after it: the 09:15:19 runs of 2026-10-06 and 10-07 all failed completeness
+# (only up to yesterday came back), the 11:00 ones passed. Before this time today has no bar.
+# Earlier incident: an 08:32 Monday run picked today and failed the same way (2026-10-05).
+# ponytail: fixed 15-min margin after ATO; if 09:30 still misses, move it, or fall back to the
+# previous session when today's bar is absent.
+_FIRST_BAR_TIME = time(9, 30)
 
 
 def is_provisional_session(trading_date: date, now: datetime, close: str = "15:00") -> bool:
     """True while `trading_date` is today's session and it has not closed yet: its bar is a
-    live snapshot, not a closing price. Before 09:15 trading_date is the PREVIOUS session
+    live snapshot, not a closing price. Before 09:30 trading_date is the PREVIOUS session
     (see latest_trading_day), so this is False and that day's closed bar is used."""
     now_vn = now.astimezone(_VN_TZ)
     return trading_date == now_vn.date() and now_vn.time() < time.fromisoformat(close)

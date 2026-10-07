@@ -42,6 +42,8 @@ def test_latest_trading_day_before_session_opens_uses_previous_day(db_conn):
     seed_calendar_from_weekdays(db_conn, date(2026, 10, 1), date(2026, 10, 6), holidays=set())
     vn = ZoneInfo("Asia/Ho_Chi_Minh")
     assert latest_trading_day(db_conn, datetime(2026, 10, 5, 8, 32, tzinfo=vn)) == date(2026, 10, 2)  # Mon pre-open -> Fri
+    assert latest_trading_day(db_conn, datetime(2026, 10, 5, 9, 15, 19, tzinfo=vn)) == date(2026, 10, 2)  # ATO just matched: no bar yet
+    assert latest_trading_day(db_conn, datetime(2026, 10, 5, 9, 30, tzinfo=vn)) == date(2026, 10, 5)
     assert latest_trading_day(db_conn, datetime(2026, 10, 5, 10, 0, tzinfo=vn)) == date(2026, 10, 5)
     # 00:30 VN Tuesday is still Monday in UTC — must resolve in VN time, pre-open -> Monday
     assert latest_trading_day(db_conn, datetime(2026, 10, 5, 17, 30, tzinfo=timezone.utc)) == date(2026, 10, 5)
