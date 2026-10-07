@@ -59,7 +59,7 @@ Mục 10 có phần [Nhiều người dùng](#nhiều-người-dùng-dữ-liệu
 - **Fail-closed:** thiếu dữ liệu, lịch giao dịch hay độ phủ thì trả trạng thái lỗi rõ ràng, không đoán.
 - **Dữ liệu chung, góc nhìn riêng:** mỗi mã chỉ được tải và phân tích một lần cho mọi người dùng, và nhãn lưu lại không phụ thuộc vị thế của ai. Phần riêng của từng người (vị thế, danh sách theo dõi, nhãn theo vị thế, bot và profile Hermes) được tách theo Telegram user id.
 
-Tài liệu thiết kế: `../vn-trading-agent-plan_final.md`. Kế hoạch triển khai: `../docs/superpowers/plans/2026-09-30-vn-trading-agent-phase-0-1.md`.
+Tài liệu thiết kế: [`docs/design/vn-trading-agent-plan_final.md`](docs/design/vn-trading-agent-plan_final.md). Kế hoạch và spec từng giai đoạn: [`docs/superpowers/`](docs/superpowers/). Ghi chú bàn giao cũ (đã hoàn thành): [`docs/archive/`](docs/archive/).
 
 ## 2. Kiến trúc
 
@@ -116,11 +116,14 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `pipeline/run_analysis.py` | Điều phối toàn bộ pipeline cho một mã, kèm CLI |
 | `pipeline/stock_report.py` | Render báo cáo cổ phiếu bằng code |
 | `pipeline/jobs.py`, `pipeline/grading.py` | Hàng đợi job, chấm dự báo |
+| `pipeline/price_alerts.py` | Cảnh báo giá theo mốc của nhận định chính thức (xem "Cảnh báo giá") |
 | `mcp_server/` | MCP server và 18 tool; `identity.py` xác định người gọi (`VNMCP_USER_ID`) |
-| `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, backup, `add_user.sh` / `remove_user.sh` (thêm / xóa người dùng) |
-| `db/` | Migrations (`001`–`018`), tạo role, tạo DB test |
+| `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, backup, `add_user.sh` / `remove_user.sh` (thêm / xóa người dùng), `pending_alerts.py` + `setup_alerts_cron.sh` (gửi cảnh báo giá qua cron Hermes) |
+| `db/` | Migrations (`001`–`020`), tạo role, tạo DB test |
 | `llm/`, `schemas/` | Các vai trò LLM trong pipeline (đang **tắt**, giữ lại để bật sau) |
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
+| `docs/` | `design/` (thiết kế tổng thể), `superpowers/plans`, `superpowers/specs` (kế hoạch và spec từng giai đoạn), `archive/` (ghi chú cũ). Không đưa vào image |
+| `tests/` | Test pytest, chạy bằng `./run_tests.sh` từ host. Không đưa vào image |
 | `.hermes/skills/vn-market/vn-stock-analyze/` | Skill duy nhất cho phân tích cổ phiếu VN: định tuyến câu hỏi sang tool MCP, giọng văn, quy trình báo cáo. Dùng chung, chỉ đọc cho mọi profile |
 | `config/` | `vn-rules.yaml` (ngưỡng nghiệp vụ), `models.yaml` (mô hình LLM) |
 | `infrastructure/` | `docker-compose.yml`, `Dockerfile` (+ `.dockerignore`), `.env.example`: toàn bộ cấu hình Docker, mọi giá trị phụ thuộc máy (cổng, đường dẫn, tên project, số worker) khai báo qua `infrastructure/.env` |
