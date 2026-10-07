@@ -480,12 +480,17 @@ Có thể kiểm thử không cần Hermes bằng MCP Inspector: `npx @modelcont
 
 ## 13. Sao lưu và khôi phục
 
+### Database
+
 ```bash
-./ops/backup.sh         # pg_dump vào ./backups/
-./ops/restore_test.sh   # khôi phục bản mới nhất vào DB tạm, so số dòng, rồi xóa
+./ops/backup.sh         # pg_dump → ~/backups/db/vnmcp_<thời điểm>.dump, giữ 14 bản mới nhất
+./ops/restore_test.sh   # khôi phục bản mới nhất vào DB tạm, kiểm tra các bảng chính có dữ liệu, rồi xóa
 ```
 
-Cần client `pg_dump` phiên bản 16. Nếu host khác phiên bản, chạy trong container `postgres`.
+- Cả hai script chạy `pg_dump`/`pg_restore` **trong container `postgres`**, nên không phụ thuộc phiên bản client trên host (host đang có `pg_dump` 12, không dump được server 16).
+- Dump ghi ra file `.part` trước, xong mới đổi tên: dump lỗi không bao giờ thành bản sao lưu và không đẩy bản tốt ra khỏi vòng giữ.
+- Dump không chứa role. Khi khôi phục, dùng `--no-owner --no-acl`, rồi chạy `python -m db.setup_roles` để tạo lại `mcp_ro`, `pipeline_rw`, `retention_job` và cấp quyền.
+- File dump có danh mục, vị thế của người dùng: quyền 600, mã hóa (`gpg -c`) trước khi đưa ra khỏi máy.
 
 ### Tri thức của Hermes
 
@@ -503,10 +508,10 @@ Toàn bộ trạng thái Hermes nằm ở `~/.hermes` trên host (bind mount và
 
 Bản zip khoảng 100 MB, không gồm mã nguồn Hermes và các package trong venv MCP (dựng lại khi khởi động). File chứa token bot, khóa API và hội thoại của người dùng. Script đặt quyền 600, và **phải mã hóa trước khi đưa ra khỏi máy**: `gpg -c <file>.zip`. Đừng đưa `~/.hermes` vào git, vì dữ liệu này đổi liên tục, có file SQLite và có secrets.
 
-Chạy hằng ngày lúc 19:00, sau phiên giao dịch và lần thử lại `close_sync` (`crontab -e` trên host):
+Chạy cả hai bản sao lưu hằng ngày lúc 19:00, sau phiên giao dịch và lần thử lại `close_sync` (`crontab -e` trên host):
 
 ```
-0 19 * * * cd /home/anm/0_Projects/thaoht/99.CK/vn-market-mcp && ./ops/backup_hermes.sh >> ~/backups/hermes/backup.log 2>&1
+0 19 * * * cd /home/anm/0_Projects/thaoht/99.CK/vn-market-mcp && { ./ops/backup.sh; ./ops/backup_hermes.sh; } >> ~/backups/backup.log 2>&1
 ```
 
 **Chuyển server có kế hoạch** (máy cũ còn chạy): chép nguyên thư mục, không cần `hermes import`.
@@ -523,7 +528,13 @@ Không đồng bộ liên tục `~/.hermes` khi gateway đang chạy (rsync theo
 
 **Chuyển sang máy mới từ bản zip** (máy cũ hỏng):
 
-1. Cài Docker, clone repo này, tạo `.env` và `infrastructure/.env`, khôi phục DB từ bản `ops/backup.sh` (`pg_restore`), rồi `docker compose up -d`.
+1. Cài Docker, clone repo này, tạo `.env` và `infrastructure/.env` (cùng mật khẩu role như máy cũ), rồi khôi phục DB:
+   ```bash
+   docker compose up -d postgres
+   docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-acl --exit-on-error' < vnmcp_<thời điểm>.dump
+   set -a; . ./.env; set +a; python -m db.setup_roles
+   docker compose up -d
+   ```
 2. Giải mã bản zip, chép vào `~/.hermes/`, rồi chạy `docker compose -f infrastructure/hermes-compose.yml up -d`.
 3. `docker exec -u hermes hermes-gateway hermes import --force /opt/data/<file>.zip`. Zip phải nằm trong `~/.hermes`, để user `hermes` trong container đọc được.
 4. `docker compose -f infrastructure/hermes-compose.yml up -d --force-recreate`: `mcp-venv-init` cài lại package cho venv MCP, gateway nạp lại profile, bot và cron.
