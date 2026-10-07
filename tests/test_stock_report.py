@@ -46,3 +46,18 @@ def test_in_session_flag_and_missing_market_and_flow():
                                close=32250.0, prev_close=None, volume=None, in_session=True, fund_period=None,
                                fund_history=[], flow_rows=[])
     assert "giá tạm tính" in text and "Chưa có dữ liệu VN-Index" in text and "**3. Dòng tiền khối ngoại**" not in text
+
+
+def test_macro_line_and_coverage_names_what_is_missing():
+    snap = {**SNAP, "weight_coverage": 0.85,
+            "components": {"technical": 40.0, "flow": 55.0, "news_events": None,
+                           "fundamental_valuation": 60.0, "sector_macro": 47.5},
+            "macro": {"interbank_overnight": {"value": 2.05, "period": "2026-10-05", "score": 79.0},
+                      "cpi_yoy": {"value": 5.08, "period": "2026-09-01", "score": 38.0},
+                      "breadth_ma50": {"value": 0.4667, "period": "2026-10-07", "score": 46.7}}}
+    text = render_stock_report(snap, ticker="TCB", name=None, as_of=datetime(2026, 10, 7, 8, 40, tzinfo=timezone.utc),
+                               close=32250.0, prev_close=None, volume=None, in_session=False, fund_period=None,
+                               fund_history=[], flow_rows=[])
+    assert "mới phản ánh ~85% yếu tố (thiếu tin tức)" in text
+    assert "Vĩ mô 47,5/100 (trung tính): lãi suất liên ngân hàng qua đêm 2,05% (05/10)" in text
+    assert "CPI so với cùng kỳ 5,08% (tháng 09/2026)" in text and "47% mã VN30 trên MA50" in text

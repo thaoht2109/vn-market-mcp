@@ -73,3 +73,14 @@ def flow_score(rows: list[tuple[float | None, float | None]]) -> float | None:
         return None
     ratio = sum(n for n, _ in rows) / sum(v for _, v in rows)
     return max(0.0, min(100.0, 50 + ratio / FLOW_FULL_SCALE * 50))
+
+
+def news_score(items: list[tuple[float, int]], half_life_days: float, prior_weight: float) -> float | None:
+    """news_events 0-100 from (age_days, sentiment -1/0/+1) of judged headlines. Newer news weighs
+    more; prior_weight is a neutral pseudo-item so one or two headlines can't swing it to 0/100.
+    None when nothing is judged: "no judged news" is not the same as "neutral news"."""
+    if not items:
+        return None
+    weights = [0.5 ** (max(age, 0.0) / half_life_days) for age, _ in items]
+    signed = sum(w * s for w, (_, s) in zip(weights, items))
+    return 50 + 50 * signed / (sum(weights) + prior_weight)

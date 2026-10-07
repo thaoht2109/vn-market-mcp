@@ -45,6 +45,36 @@ weights:
     fundamental_valuation: 0.45
     sector_macro: 0.15
 
+# sector_macro (pipeline/macro_score.py): mỗi chỉ tiêu ra điểm 0–100 (50 = trung tính) theo
+# 50 + (giá trị − neutral) × pts_per_unit, chặn trong 0–100; điểm vĩ mô = trung bình các chỉ tiêu còn
+# mới (quá max_age_days thì bỏ). Không dùng VN-Index so với MA200: chỉ số đó đã chặn nhãn mua
+# (regime), tính thêm vào điểm là tính hai lần.
+macro_score:
+  interbank_overnight:   # %/năm; thấp = thanh khoản hệ thống dồi dào
+    neutral: 4.0
+    pts_per_unit: -15
+    max_age_days: 7
+  cpi_yoy:               # %; quanh mục tiêu Quốc hội ~4,5%
+    neutral: 4.5
+    pts_per_unit: -20
+    max_age_days: 70
+  gdp_yoy:               # % quý so với cùng kỳ; kỳ = ngày đầu quý
+    neutral: 6.5
+    pts_per_unit: 10
+    max_age_days: 200
+  usd_vnd_change:        # % thay đổi tỷ giá trung tâm trong window_days; VND mất giá = áp lực vốn ngoại
+    window_days: 30
+    min_span_days: 7     # cần ít nhất ngần này ngày dữ liệu mới so được
+    full_scale_pct: 2.0  # +2% → 0 điểm, −2% → 100 điểm
+    max_age_days: 4
+  # breadth_ma50: tỷ lệ mã VN30 trên MA50 × 100, không cần tham số
+
+# news_events (pipeline/scoring.news_score): đánh giá tốt/xấu từng tin do LLM của Hermes chấm
+# (tool judge_news), chỉ dùng cho điểm tham khảo trong báo cáo chat, không đổi nhãn chính thức.
+news_score:
+  half_life_days: 3.5    # tin cũ 3,5 ngày còn nửa trọng số
+  prior_weight: 1.0      # kéo về 50: một tin xấu mới nhất → 25 điểm, không phải 0
+
 market_bands:
   HOSE: 0.07
   HNX: 0.10
