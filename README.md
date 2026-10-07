@@ -155,9 +155,13 @@ Khi chuyển sang máy khác, chỉ cần sửa `infrastructure/.env`: `POSTGRES
 ```bash
 docker compose up -d postgres
 set -a; . ./.env; set +a
-python -c "from db.connection import get_conn; from db.migrate import apply_migrations; from pathlib import Path; c=get_conn().__enter__(); print(apply_migrations(c, Path('db/migrations'))); c.commit()"
+python -c "
+from pathlib import Path; from db.connection import get_conn; from db.migrate import apply_migrations
+with get_conn() as c: print(apply_migrations(c, Path('db/migrations')))"
 python -m db.setup_roles
 ```
+
+Migration cần tài khoản quản trị (`DATABASE_URL`, `vnmcp_admin` trong `.env` gốc): các role của ứng dụng không có quyền tạo bảng. Phải dùng `with get_conn() as c`: dạng `c = get_conn().__enter__()` làm Python thu hồi ngay context manager và đóng kết nối trước khi migration chạy (`the connection is closed`).
 
 Lệnh tạo role sẽ tạo `mcp_ro` (chỉ đọc), `pipeline_rw` (SELECT, INSERT, UPDATE) và `retention_job` (SELECT và DELETE). Quyền được cấp trên các bảng **đang có**, nên sau mỗi migration tạo bảng mới phải chạy lại `python -m db.setup_roles`.
 
@@ -225,11 +229,16 @@ Khi giá chạm một mốc trong nhận định chính thức, người liên q
 
 Mỗi job `on_demand` ghi người yêu cầu vào `jobs.requested_by` (để tra cứu): `user:<id>` (từ `run_analysis` của profile có `VNMCP_USER_ID`), `watch:<id>` (từ `watch_ticker`), `mcp` (không xác định được người) hoặc `cron`.
 
-Áp dụng migration mới cho container đang chạy:
+Áp dụng migration mới cho hệ thống đang chạy. Chạy trong container `scheduler`, container duy nhất có tài khoản quản trị (`ADMIN_DATABASE_URL`); `worker` chỉ có `pipeline_rw`, không tạo được bảng. Image đóng gói sẵn thư mục migration, nên build lại `scheduler` trước để nó thấy file mới:
 
 ```bash
-docker compose exec worker python -c "from db.connection import get_conn; from db.migrate import apply_migrations; from pathlib import Path; c=get_conn().__enter__(); print(apply_migrations(c, Path('db/migrations'))); c.commit()"
+docker compose up -d --build scheduler
+docker compose exec scheduler sh -c 'DATABASE_URL=$ADMIN_DATABASE_URL python -c "
+from pathlib import Path; from db.connection import get_conn; from db.migrate import apply_migrations
+with get_conn() as c: print(apply_migrations(c, Path(\"db/migrations\")))"'
 ```
+
+In ra danh sách file vừa áp dụng (`[]` nếu không có gì mới). Nếu migration tạo bảng mới, chạy tiếp từ host (cần mật khẩu các role trong `.env` gốc): `set -a; . ./.env; set +a; python -m db.setup_roles`.
 
 ## 7. Lịch chạy tự động
 
