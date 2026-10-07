@@ -110,9 +110,42 @@ def _flow(rows: list[tuple]) -> list[str]:
     return out
 
 
+_SENTIMENT = {1: "tốt", 0: "trung tính", -1: "xấu"}
+_COMPONENT_NAMES = {"technical": "kỹ thuật", "flow": "dòng tiền", "news_events": "tin tức",
+                    "fundamental_valuation": "định giá", "sector_macro": "vĩ mô"}
+
+
+def _headline(d, title, src, sentiment, reason) -> str:
+    out = f"Tin {d:%d/%m}: {title}" + (f" ({src})" if src else "")
+    if sentiment is not None:
+        out += f" → trợ lý đánh giá {_SENTIMENT[sentiment]}" + (f": {reason}" if reason else "")
+    return out
+
+
+def _macro(s: dict) -> list[str]:
+    parts, score = s.get("macro") or {}, (s.get("components") or {}).get("sector_macro")
+    if score is None:
+        return []
+    bits = []
+    if "interbank_overnight" in parts:
+        p = parts["interbank_overnight"]
+        bits.append(f"lãi suất liên ngân hàng qua đêm {_pct(p['value'], 2, sign=False)} ({p['period'][8:10]}/{p['period'][5:7]})")
+    if "cpi_yoy" in parts:
+        p = parts["cpi_yoy"]
+        bits.append(f"CPI so với cùng kỳ {_pct(p['value'], 2, sign=False)} (tháng {p['period'][5:7]}/{p['period'][:4]})")
+    if "gdp_yoy" in parts:
+        bits.append(f"GDP quý so với cùng kỳ {_pct(parts['gdp_yoy']['value'], 2, sign=False)}")
+    if "usd_vnd_change" in parts:
+        bits.append(f"tỷ giá trung tâm USD/VND {_pct(parts['usd_vnd_change']['value'], 2)} từ {parts['usd_vnd_change']['since'][8:10]}/{parts['usd_vnd_change']['since'][5:7]}")
+    if "breadth_ma50" in parts:
+        bits.append(f"{_n(parts['breadth_ma50']['value'] * 100)}% mã VN30 trên MA50")
+    tone = "thuận lợi" if score >= 60 else "bất lợi" if score <= 40 else "trung tính"
+    return [f"Vĩ mô {_n(score, 1)}/100 ({tone}): " + ", ".join(bits) + "."]
+
+
 def _market(s: dict, close: float, news_rows: list[tuple]) -> list[str]:
     mk = s.get("market") or {}
-    headlines = [f"Tin {d:%d/%m}: {title}" + (f" ({src})" if src else "") for d, title, src in news_rows]
+    headlines = _macro(s) + [_headline(*row[:3], *row[4:6]) for row in news_rows]
     if mk.get("close") is None:
         return ["Chưa có dữ liệu VN-Index trong lần chạy này."] + headlines
     idx = mk["close"]
@@ -133,7 +166,7 @@ def _market(s: dict, close: float, news_rows: list[tuple]) -> list[str]:
 def render_stock_report(snapshot: dict, *, ticker: str, name: str | None, as_of: datetime, close: float,
                         prev_close: float | None, volume: float | None, in_session: bool,
                         fund_period: str | None, fund_history: list[tuple[str, dict]],
-                        flow_rows: list[tuple], news_rows: list[tuple] = ()) -> str:
+                        flow_rows: list[tuple], news_rows: list[tuple] = (), with_news: dict | None = None) -> str:
     """Complete data report (no length cap). The AI "Nhận định" is appended by the caller."""
     s = snapshot
     t, plan, mk = s["technical"], s["risk_plan"], s.get("market") or {}
@@ -152,10 +185,16 @@ def render_stock_report(snapshot: dict, *, ticker: str, name: str | None, as_of:
     conf = s.get("confidence") or 0
     conf_txt = "cao" if conf >= 0.75 else "trung bình" if conf >= 0.5 else "thấp"
     wc = s.get("weight_coverage") or 1
-    cov = f", mới phản ánh ~{round(wc * 100)}% yếu tố (thiếu tin tức/vĩ mô)" if wc < 0.95 else ""
+    components = s.get("components")
+    missing = "/".join(_COMPONENT_NAMES[k] for k, v in components.items() if v is None) if components else "tin tức/vĩ mô"
+    cov = f", mới phản ánh ~{round(wc * 100)}% yếu tố (thiếu {missing})" if wc < 0.95 else ""
     score = s.get("composite_score")
     out.append(f"**Kết luận:** {stance} — {reason}. Độ tin cậy {conf_txt} ({_n(conf, 2)}){cov}"
                + (f"; điểm tổng hợp {_n(score, 1)}/100." if score is not None else "."))
+    if with_news:
+        out.append(f"_Tính thêm {with_news['count']} tin gần đây theo đánh giá của trợ lý (điểm tin tức "
+                   f"{_n(with_news['news_events'], 1)}/100): điểm tham khảo {_n(with_news['score'], 1)}/100, phản ánh "
+                   f"~{round(with_news['weight_coverage'] * 100)}% yếu tố. Nhãn chính thức không đổi._")
 
     sess = s.get("session") or {}
     if sess.get("provisional") and sess.get("live_label") != label:
@@ -169,7 +208,7 @@ def render_stock_report(snapshot: dict, *, ticker: str, name: str | None, as_of:
     block("1. Kỹ thuật", _technical(s, close, prev_close, volume))
     block("2. Cơ bản & định giá", _fundamental(s, fund_period, fund_history))
     block("3. Dòng tiền khối ngoại", _flow(flow_rows))
-    block("4. Thị trường chung (VN-Index) & tin tức", _market(s, close, list(news_rows)))
+    block("4. Thị trường chung, vĩ mô & tin tức", _market(s, close, list(news_rows)))
 
     stop_pct = (plan["stop_loss"] / close - 1) * 100
     tgt_pct = (plan["target"] / close - 1) * 100

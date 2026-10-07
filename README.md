@@ -7,7 +7,7 @@
 ![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![MCP](https://img.shields.io/badge/MCP-stdio-000000)
 
-`vn-market-mcp` tự động thu thập giá, báo cáo tài chính, dòng tiền khối ngoại, tin tức và số liệu vĩ mô; tính chỉ báo, chấm điểm và gán nhãn hành động cho VN30 cùng mọi mã niêm yết người dùng quan tâm. Kết quả được cung cấp cho trợ lý chat [Hermes](https://github.com/NousResearch/hermes-agent) qua 18 tool MCP, để người dùng hỏi đáp và nhận báo cáo ngay trên Telegram.
+`vn-market-mcp` tự động thu thập giá, báo cáo tài chính, dòng tiền khối ngoại, tin tức và số liệu vĩ mô; tính chỉ báo, chấm điểm và gán nhãn hành động cho VN30 cùng mọi mã niêm yết người dùng quan tâm. Kết quả được cung cấp cho trợ lý chat [Hermes](https://github.com/NousResearch/hermes-agent) qua 19 tool MCP, để người dùng hỏi đáp và nhận báo cáo ngay trên Telegram.
 
 Mọi con số đều do code tính và kiểm chứng được; mô hình ngôn ngữ chỉ diễn giải, không bao giờ tự chọn nhãn hay bịa số liệu.
 
@@ -117,9 +117,9 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `pipeline/stock_report.py` | Render báo cáo cổ phiếu bằng code |
 | `pipeline/jobs.py`, `pipeline/grading.py` | Hàng đợi job, chấm dự báo |
 | `pipeline/price_alerts.py` | Cảnh báo giá theo mốc của nhận định chính thức (xem "Cảnh báo giá") |
-| `mcp_server/` | MCP server và 18 tool; `identity.py` xác định người gọi (`VNMCP_USER_ID`) |
+| `mcp_server/` | MCP server và 19 tool; `identity.py` xác định người gọi (`VNMCP_USER_ID`) |
 | `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, `backup.sh` (DB) / `backup_hermes.sh` (toàn bộ `~/.hermes`), `add_user.sh` / `remove_user.sh` (thêm / xóa người dùng), `pending_alerts.py` + `setup_alerts_cron.sh` (gửi cảnh báo giá qua cron Hermes) |
-| `db/` | Migrations (`001`–`020`), tạo role, tạo DB test |
+| `db/` | Migrations (`001`–`021`), tạo role, tạo DB test |
 | `llm/`, `schemas/` | Các vai trò LLM trong pipeline (đang **tắt**, giữ lại để bật sau) |
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
 | `docs/` | `design/` (thiết kế tổng thể), `superpowers/plans`, `superpowers/specs` (kế hoạch và spec từng giai đoạn), `archive/` (ghi chú cũ). Không đưa vào image |
@@ -286,9 +286,10 @@ Scheduler chỉ chạy vào ngày giao dịch. Giờ dưới đây là giờ Vi�
 | Kỹ thuật | Xu hướng MA20/50/200, MACD, vùng RSI |
 | Định giá cơ bản | P/E, P/B so với ≥3 quý lịch sử của chính mã và ≥3 mã cùng ngành, cộng với ROE |
 | Dòng tiền | Khối ngoại ròng 5 phiên chia giá trị giao dịch (±10% tương ứng 100/0 điểm, cần ≥3 phiên) |
-| Thị trường | Trạng thái thị trường, độ rộng VN30 (số mã tăng/giảm, % mã trên MA50, thanh khoản) |
+| Vĩ mô (`sector_macro`) | `pipeline/macro_score.py`, không dùng LLM: lãi suất liên ngân hàng qua đêm, CPI và GDP so với cùng kỳ, tỷ giá trung tâm USD/VND 30 ngày, % mã VN30 trên MA50. Mỗi chỉ tiêu ra 0–100 theo ngưỡng `macro_score` trong `vn-rules.yaml`, lấy trung bình các chỉ tiêu còn mới. **Không** dùng VN-Index so với MA200: chỉ số đó đã chặn nhãn mua (trạng thái thị trường). Cùng một điểm cho mọi mã, chưa phân biệt độ nhạy theo ngành |
+| Tin tức (`news_events`) | Không có trong điểm chính thức. Hermes đánh giá từng tin trong báo cáo (`judge_news`); `get_stock_report` in thêm dòng **điểm tham khảo** gồm cả tin tức (tin mới nặng hơn, `news_score` trong `vn-rules.yaml`). Nhãn, dự báo, cảnh báo giá vẫn theo điểm chính thức |
 
-Thành phần thiếu dữ liệu sẽ bị bỏ qua. Nếu độ phủ trọng số dưới `coverage.min_weight_coverage` thì mã được xử lý fail-closed.
+Thành phần thiếu dữ liệu sẽ bị bỏ qua, và báo cáo ghi rõ yếu tố nào còn thiếu. Nếu độ phủ trọng số dưới `coverage.min_weight_coverage` thì mã được xử lý fail-closed.
 
 Mã ngoài VN30 (nhóm B) phải đạt các ngưỡng sau, và độ tin cậy bị giới hạn ở `tier_b.confidence_cap` (0,6):
 
@@ -314,7 +315,7 @@ Nhãn theo vị thế được áp dụng ở `get_snapshot`, `get_stock_report`
 
 ## 10. MCP server và Hermes
 
-`python -m mcp_server.server` (stdio) cung cấp 18 tool. Tool chỉ đọc dùng role `mcp_ro`, tool ghi dùng role `pipeline_rw`.
+`python -m mcp_server.server` (stdio) cung cấp 19 tool. Tool chỉ đọc dùng role `mcp_ro`, tool ghi dùng role `pipeline_rw`.
 
 **Người gọi là ai** (`mcp_server/identity.py`): là `VNMCP_USER_ID` của profile đã chạy MCP server, và chỉ là biến đó. Tool không nhận id người dùng làm tham số. Server không có biến này (profile `default`, phục vụ nhóm chung) thì tool phân tích chạy bình thường, còn tool danh mục riêng trả `status="no_personal_scope"` kèm cảnh báo, không ghi gì vào DB.
 
@@ -325,6 +326,7 @@ Nhãn theo vị thế được áp dụng ở `get_snapshot`, `get_stock_report`
 | `get_snapshot` | Snapshot theo `ticker` hoặc `run_id`. Có `VNMCP_USER_ID` thì nhãn và `holding_state` tính theo vị thế người gọi |
 | `get_stock_report` | Báo cáo do code render (nhãn theo vị thế người gọi), kèm "Nhận định" đã lưu nếu số liệu chưa đổi |
 | `save_commentary` | Lưu "Nhận định" của Hermes sau khi qua bộ kiểm tra tất định (`verify_commentary`) |
+| `judge_news` | Lưu đánh giá tốt/trung tính/xấu của Hermes cho các tin trong báo cáo (`news_judgments`); chỉ nhận tin của đúng mã, giá trị −1/0/1, đánh giá đầu tiên được giữ |
 | `query_history` | Lịch sử `prices` / `fundamentals` / `foreign_flow` |
 | `set_price_alerts` | Bật/tắt cảnh báo giá của người gọi, cho một mã hoặc mọi mã |
 | `explain_run` | Giải thích một lần chạy (stop-loss, lý do nhãn) |
@@ -598,3 +600,4 @@ Các thay đổi lớn về cách dùng nhiều người (tháng 10/2026), mới
 | Thu số liệu NHNN (tỷ giá, lãi suất) từ sbv.gov.vn trong job `collect_rss`, tối đa 3 giờ/lần, thứ 2–6; khối `indicators` trong `get_macro_context` | `019` | Sau migration chạy lại `python -m db.setup_roles`; sandbox/firewall cần cho phép `sbv.gov.vn` |
 | Thêm nguồn số liệu NSO (báo cáo KT-XH hằng tháng: GDP, CPI, FDI; 2 lần/ngày), giá hàng hóa tương lai (Yahoo chart API) và vàng SJC (vnstock), cùng runner với NHNN; nhãn tiếng Việt và cảnh báo độ mới theo từng nguồn | — | `docker compose up -d --build worker scheduler`, restart Hermes gateway; mạng cần ra `www.nso.gov.vn`, `query1.finance.yahoo.com`, `sjc.com.vn` |
 | Cảnh báo giá vào chat riêng: vào vùng mua / chạm cắt lỗ / đạt mục tiêu theo nhận định chính thức, trong phiên mỗi 15 phút và theo giá đóng cửa; báo theo chuyển trạng thái, vùng đệm 1%, tối đa 1 tin mỗi điều kiện mỗi phiên; tắt bằng chat (tool `set_price_alerts`) | `020` | Sau migration chạy lại `python -m db.setup_roles`; `docker compose up -d --build worker scheduler`; `ops/setup_alerts_cron.sh <tên>` cho từng người dùng đã có; restart Hermes gateway để nạp tool và skill mới |
+| Điểm vĩ mô tính bằng quy tắc vào điểm chính thức (độ phủ 70% → 85%); Hermes chấm tin tốt/xấu cho tin trong báo cáo (tool `judge_news`), báo cáo in thêm điểm tham khảo gồm tin tức, không đổi nhãn | `021` | Sau migration chạy lại `python -m db.setup_roles`; `docker compose up -d --build worker scheduler`; restart Hermes gateway để nạp tool và skill mới. Điểm mới áp dụng từ lần chạy kế tiếp; nhãn của mã gần ngưỡng (55, 40, 70) có thể đổi |

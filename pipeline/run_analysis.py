@@ -32,6 +32,7 @@ from pipeline.fundamentals import fundamental_snapshot, peer_metrics, valuation_
 from pipeline.indicators import technical_snapshot
 from pipeline.ingest import IngestBatchError, assert_batch_ok, ingest_fundamentals_and_flow, ingest_news, ingest_ticker_day
 from pipeline.llm_gate import llm_pipeline_enabled
+from pipeline.macro_score import macro_score
 from pipeline.regime import get_market_context
 from pipeline.report import render_synthesis_report
 from pipeline.risk_plan import RiskPlanConfig, risk_plan
@@ -314,12 +315,17 @@ def run_analysis(
     # most expensive percentile so it never satisfies max_valuation_percentile.
     valuation_percentile = percentile_score(pb_history, current_pb) if current_pb is not None else 100.0
 
+    market = get_market_context(conn, provider, trading_date, now)
+    macro_component, macro_parts = macro_score(conn, trading_date, market, rules["macro_score"])
+
     component_scores = {
         "technical": technical_component,
         "flow": flow_component,
-        "news_events": None,  # LLM role — out of scope for this plan (§3 role table)
+        # Judged per headline by the Hermes chat LLM (judge_news), so only the chat report's reference
+        # score includes it; the official score/label stays deterministic.
+        "news_events": None,
         "fundamental_valuation": fundamental_component,
-        "sector_macro": None,  # LLM role — out of scope for this plan
+        "sector_macro": macro_component,
     }
     weights = rules["weights"].get(style, rules["weights"]["long"])
     composite = composite_score(component_scores, weights)
@@ -347,7 +353,6 @@ def run_analysis(
     warnings.extend(plan.warnings)
 
     label_cfg = ActionLabelConfig.from_rules(rules)
-    market = get_market_context(conn, provider, trading_date, now)
     label_input = ActionLabelInput(
         coverage_insufficient=False,
         gate_blocked=False,
@@ -394,6 +399,8 @@ def run_analysis(
     snapshot["fundamental"] = fund
     snapshot["risk_plan"] = plan
     snapshot["composite_score"] = composite.score
+    snapshot["components"] = component_scores
+    snapshot["macro"] = macro_parts
     snapshot["weight_coverage"] = composite.weight_coverage
     snapshot["confidence"] = conf
     snapshot["action_label"] = label

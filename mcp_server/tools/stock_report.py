@@ -11,21 +11,26 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 
 from mcp_server.connection import get_ro_conn, get_rw_conn
 from mcp_server.envelope import build_envelope
+from mcp_server.identity import pinned_user
 from mcp_server.tools.snapshot import get_snapshot_tool
 from pipeline.calendar import NoCalendarDataError, is_trading_hours
+from pipeline.scoring import composite_score, news_score
 from pipeline.stock_report import COMMENTARY_TITLE, DISCLAIMER, render_stock_report
 
 # Bump when the report layout / commentary instructions change, so old commentary is never replayed.
-REPORT_TEMPLATE_VERSION = "v6"
+REPORT_TEMPLATE_VERSION = "v7"
+REASON_MAX = 160
+_VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 _RULES = Path(__file__).resolve().parents[2] / "config" / "vn-rules.yaml"
 # Deterministic inputs of the report; excludes as_of / run ids / LLM text (synthesis, debate, news).
 _SNAPSHOT_KEYS = ("technical", "fundamental", "risk_plan", "composite_score", "weight_coverage",
-                  "confidence", "action_label", "warnings", "market")
+                  "confidence", "action_label", "warnings", "market", "components", "macro")
 
 
 def fingerprint(snapshot: dict, closes: list, flow: list, news: list = ()) -> str:
@@ -34,17 +39,34 @@ def fingerprint(snapshot: dict, closes: list, flow: list, news: list = ()) -> st
         core["market"] = {k: v for k, v in core["market"].items() if k != "as_of"}
     core["px"] = [[float(c), float(v or 0)] for c, v in closes]
     core["flow"] = [[str(d), round(float(n or 0))] for d, _b, _s, n in flow]
-    core["news"] = [[str(d), t] for d, t, _src in news]
+    core["news"] = [[str(d), t, sentiment] for d, t, _src, _id, sentiment, _reason in news]
     return hashlib.sha256(json.dumps(core, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def _news_rows(conn, ticker: str) -> list[tuple]:
-    """Last 7 days of headlines for the ticker, minus those the tier-1 filter dropped (vnstock news has no verdict: kept)."""
+    """Last 7 days of headlines for the ticker, minus those the tier-1 filter dropped (vnstock news has no
+    verdict: kept): (published_at, title, source, id, sentiment, reason), sentiment None = not judged yet."""
     return conn.execute(
-        "SELECT published_at, title, source FROM news_items WHERE %s = ANY(tickers)"
-        " AND filter_status IS DISTINCT FROM 'dropped'"
-        " AND published_at >= now() - interval '7 days' ORDER BY published_at DESC LIMIT 5", (ticker,),
+        "SELECT n.published_at, n.title, n.source, n.id, j.sentiment, j.reason FROM news_items n"
+        " LEFT JOIN news_judgments j ON j.news_id = n.id AND j.ticker = %s"
+        " WHERE %s = ANY(n.tickers) AND n.filter_status IS DISTINCT FROM 'dropped'"
+        " AND n.published_at >= now() - interval '7 days' ORDER BY n.published_at DESC LIMIT 5", (ticker, ticker),
     ).fetchall()
+
+
+def _with_news(snapshot: dict, style: str, rules: dict, news: list[tuple], as_of: datetime) -> dict | None:
+    """Reference score with news_events from the judged headlines; None without components (runs made
+    before they were stored) or without any judged headline. Never touches the official score/label."""
+    components = snapshot.get("components")
+    judged = [((as_of - at).total_seconds() / 86400, sentiment) for at, *_x, sentiment, _r in news if sentiment is not None]
+    if not components or not judged:
+        return None
+    cfg = rules["news_score"]
+    component = news_score(judged, cfg["half_life_days"], cfg["prior_weight"])
+    weights = rules["weights"].get(style, rules["weights"]["long"])
+    composite = composite_score({**components, "news_events": component}, weights)
+    return {"score": composite.score, "weight_coverage": composite.weight_coverage, "news_events": component,
+            "count": len(judged)}
 
 
 def _load(ticker: str, run_id: str):
@@ -54,9 +76,10 @@ def _load(ticker: str, run_id: str):
     if data.get("status") != "ok":
         return None, data.get("status", "not_found")
     snapshot, run_as_of = data["snapshot"], datetime.fromisoformat(got["as_of"])
-    trading_hours = yaml.safe_load(_RULES.read_text())["trading_hours"]
+    rules = yaml.safe_load(_RULES.read_text())
     with get_ro_conn() as conn:
         name = (conn.execute("SELECT name FROM tickers WHERE ticker = %s", (ticker,)).fetchone() or [None])[0]
+        style = (conn.execute("SELECT style FROM runs WHERE run_id = %s", (run_id,)).fetchone() or ["long"])[0]
         px = conn.execute(
             "SELECT close, volume FROM prices_daily WHERE ticker = %s AND trade_date <= %s::date"
             " ORDER BY trade_date DESC LIMIT 2", (ticker, run_as_of.astimezone().date()),
@@ -76,16 +99,18 @@ def _load(ticker: str, run_id: str):
         ).fetchall()
         news = _news_rows(conn, ticker)
         try:
-            in_session = is_trading_hours(conn, run_as_of, trading_hours)
+            in_session = is_trading_hours(conn, run_as_of, rules["trading_hours"])
         except NoCalendarDataError:
             in_session = False
     report = render_stock_report(
         snapshot, ticker=ticker, name=name, as_of=run_as_of, close=float(px[0][0]),
         prev_close=float(px[1][0]) if len(px) > 1 else None, volume=float(px[0][1]),
         in_session=in_session, fund_period=fund[0][0] if fund else None, fund_history=fund, flow_rows=flow,
-        news_rows=news,
+        news_rows=news, with_news=_with_news(snapshot, style, rules, news, run_as_of),
     )
-    return (report, fingerprint(snapshot, px, flow, news), run_as_of, snapshot.get("action_label")), None
+    to_judge = [{"id": nid, "date": at.astimezone(_VN_TZ).strftime("%d/%m %H:%M"), "title": title, "source": src}
+                for at, title, src, nid, sentiment, _r in news if sentiment is None]
+    return (report, fingerprint(snapshot, px, flow, news), run_as_of, snapshot.get("action_label"), to_judge), None
 
 
 # --- deterministic verifier for the AI "Nhận định" (replaces the old LLM verifier_logic role) ---
@@ -139,13 +164,14 @@ def get_stock_report_tool(ticker: str, run_id: str) -> dict:
     loaded, err = _load(ticker, run_id)
     if loaded is None:
         return build_envelope({"status": err}, sources=["postgres"], as_of=now)
-    report, fp, run_as_of, _label = loaded
+    report, fp, run_as_of, _label, to_judge = loaded
     with get_ro_conn() as conn:
         row = conn.execute(
             "SELECT template_version, fingerprint, commentary FROM report_commentary WHERE ticker = %s", (ticker,),
         ).fetchone()
     cached = row[2] if row and row[0] == REPORT_TEMPLATE_VERSION and row[1] == fp else None
-    data = {"status": "ok", "report": report, "commentary": cached, "needs_commentary": cached is None}
+    data = {"status": "ok", "report": report, "commentary": cached, "needs_commentary": cached is None,
+            "news_to_judge": to_judge}
     if cached:
         data["final"] = f"{report}\n\n{COMMENTARY_TITLE}\n{cached}\n\n{DISCLAIMER}"
     return build_envelope(data, sources=["postgres", "snapshot_file"], as_of=run_as_of)
@@ -173,3 +199,31 @@ def save_commentary_tool(ticker: str, run_id: str, commentary: str) -> dict:
             (ticker, REPORT_TEMPLATE_VERSION, loaded[1], run_id, commentary.strip()),
         )
     return build_envelope({"status": "saved"}, sources=["postgres"], as_of=now)
+
+
+def judge_news_tool(ticker: str, judgments: list[dict]) -> dict:
+    """Store the chat LLM's good/neutral/bad call on headlines of the ticker's report. Only ids that are
+    in that report's headline list are accepted, sentiment must be -1/0/1, and an existing judgment is
+    kept (first wins), so a chat can neither score unrelated news nor rewrite what others see."""
+    now = datetime.now(timezone.utc)
+    ticker = ticker.strip().upper()
+    by = pinned_user() or "shared"
+    with get_rw_conn() as conn:
+        allowed = {row[3] for row in _news_rows(conn, ticker)}
+        stored, issues = 0, []
+        for j in judgments:
+            nid, sentiment, reason = j.get("id"), j.get("sentiment"), " ".join(str(j.get("reason") or "").split())
+            if nid not in allowed:
+                issues.append(f"id {nid}: không thuộc danh sách tin của {ticker} trong báo cáo")
+            elif sentiment not in (-1, 0, 1) or isinstance(sentiment, bool):
+                issues.append(f"id {nid}: sentiment phải là -1, 0 hoặc 1")
+            elif not reason:
+                issues.append(f"id {nid}: thiếu lý do")
+            else:
+                stored += conn.execute(
+                    "INSERT INTO news_judgments (news_id, ticker, sentiment, reason, judged_by)"
+                    " VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                    (nid, ticker, sentiment, reason[:REASON_MAX], by),
+                ).rowcount
+    return build_envelope({"status": "ok" if not issues else "partial", "stored": stored, "issues": issues},
+                          sources=["postgres"], as_of=now)

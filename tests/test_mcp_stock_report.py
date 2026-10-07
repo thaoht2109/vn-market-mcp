@@ -127,3 +127,45 @@ def test_report_news_rows_exclude_dropped_items_but_keep_untagged_vnstock_news()
     finally:
         with get_conn() as conn:
             conn.execute("DELETE FROM news_items WHERE source LIKE 'test_%'")
+
+
+def test_judged_headlines_add_a_reference_score_but_never_change_the_label(seeded):
+    from datetime import datetime, timedelta, timezone
+    from mcp_server.tools.stock_report import judge_news_tool
+    from pipeline.news import ensure_news_partitions
+
+    now = datetime.now(timezone.utc)
+    snap = {**SNAP, "composite_score": 52.0, "weight_coverage": 0.85,
+            "components": {"technical": 40.0, "flow": None, "news_events": None,
+                           "fundamental_valuation": 60.0, "sector_macro": 45.0}}
+    _run(seeded / "n.json", "test:RPTCMT:N", snap)
+    with get_conn() as conn:
+        ensure_news_partitions(conn, date.today())
+        conn.execute("DELETE FROM news_items WHERE source = 'test_judge'")
+        conn.execute("DELETE FROM news_judgments WHERE ticker = %s", (TICKER,))
+        conn.execute(
+            "INSERT INTO news_items (published_at, tickers, source, url, url_hash, title, fetched_at, filter_status)"
+            " VALUES (%s, ARRAY[%s], 'test_judge', 'http://t/j1', 'http://t/j1', 'RPTCMT giảm 10 phiên liên tiếp', %s, 'kept'),"
+            "        (%s, ARRAY['OTHERX'], 'test_judge', 'http://t/j2', 'http://t/j2', 'tin mã khác', %s, 'kept')",
+            (now - timedelta(hours=1), TICKER, now, now - timedelta(hours=1), now))
+        other_id = conn.execute("SELECT id FROM news_items WHERE url = 'http://t/j2'").fetchone()[0]
+    try:
+        first = get_stock_report_tool(TICKER, "test:RPTCMT:N")["data"]
+        assert "thiếu dòng tiền/tin tức" in first["report"] and "điểm tham khảo" not in first["report"]
+        [item] = first["news_to_judge"]
+        out = judge_news_tool(TICKER, [{"id": item["id"], "sentiment": -1, "reason": "giá giảm kéo dài"},
+                                       {"id": other_id, "sentiment": 1, "reason": "x"},
+                                       {"id": item["id"], "sentiment": 5, "reason": "x"}])["data"]
+        assert out["stored"] == 1 and len(out["issues"]) == 2  # other ticker's news and bad sentiment refused
+        again = judge_news_tool(TICKER, [{"id": item["id"], "sentiment": 1, "reason": "ghi đè"}])["data"]
+        assert again["stored"] == 0  # first judgment wins
+
+        second = get_stock_report_tool(TICKER, "test:RPTCMT:N")["data"]
+        assert second["news_to_judge"] == [] and second["needs_commentary"] is True
+        assert "trợ lý đánh giá xấu: giá giảm kéo dài" in second["report"]
+        assert "điểm tham khảo" in second["report"] and "Nhãn chính thức không đổi" in second["report"]
+        assert "theo dõi, chưa giải ngân" in second["report"]  # label untouched
+    finally:
+        with get_conn() as conn:
+            conn.execute("DELETE FROM news_items WHERE source = 'test_judge'")
+            conn.execute("DELETE FROM news_judgments WHERE ticker = %s", (TICKER,))
