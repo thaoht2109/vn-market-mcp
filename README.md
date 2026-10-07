@@ -509,7 +509,19 @@ Chạy hằng ngày lúc 19:00, sau phiên giao dịch và lần thử lại `cl
 0 19 * * * cd /home/anm/0_Projects/thaoht/99.CK/vn-market-mcp && ./ops/backup_hermes.sh >> ~/backups/hermes/backup.log 2>&1
 ```
 
-**Chuyển sang máy mới:**
+**Chuyển server có kế hoạch** (máy cũ còn chạy): chép nguyên thư mục, không cần `hermes import`.
+
+```bash
+# máy cũ: dừng Hermes để state.db (SQLite) không bị chép dở khi đang ghi
+docker compose -f infrastructure/hermes-compose.yml stop
+sudo rsync -aHAX --exclude hermes-agent/ ~/.hermes/ user@server-moi:/duong-dan/hermes-data/   # -a giữ owner uid 10000
+# máy mới (sau bước 1 bên dưới)
+HERMES_DATA_DIR=/duong-dan/hermes-data docker compose -f infrastructure/hermes-compose.yml up -d
+```
+
+Không đồng bộ liên tục `~/.hermes` khi gateway đang chạy (rsync theo lịch, Syncthing, ổ mạng), vì `state.db` có thể bị chép dở. Bind mount chỉ nối container với ổ đĩa của chính máy đó, không thay được bản sao ngoài máy.
+
+**Chuyển sang máy mới từ bản zip** (máy cũ hỏng):
 
 1. Cài Docker, clone repo này, tạo `.env` và `infrastructure/.env`, khôi phục DB từ bản `ops/backup.sh` (`pg_restore`), rồi `docker compose up -d`.
 2. Giải mã bản zip, chép vào `~/.hermes/`, rồi chạy `docker compose -f infrastructure/hermes-compose.yml up -d`.
