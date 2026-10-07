@@ -10,6 +10,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_server.tools.alerts import set_price_alerts_tool
 from mcp_server.tools.digests import get_market_digest_input_tool, get_weekly_digest_input_tool
 from mcp_server.tools.explain import explain_run_tool
 from mcp_server.tools.history import query_history_tool
@@ -111,6 +112,15 @@ def unwatch_ticker(ticker: str) -> dict[str, Any]:
 def list_watchlist() -> dict[str, Any]:
     """Các mã người đang chat theo dõi, kèm nhãn hành động gần nhất của từng mã (theo vị thế của họ)."""
     return list_watchlist_tool()
+
+
+@mcp.tool()
+def set_price_alerts(enabled: bool, ticker: str | None = None) -> dict[str, Any]:
+    """Bật/tắt cảnh báo giá gửi vào chat riêng của người đang chat: mã vào vùng mua (mã đang theo dõi,
+    chưa nắm giữ), chạm cắt lỗ hoặc đạt mục tiêu (mã đang nắm giữ), cả trong phiên và theo giá đóng cửa.
+    ticker=None áp cho mọi mã (và ghi đè lựa chọn riêng từng mã trước đó); có ticker thì chỉ mã đó.
+    Mặc định đang bật. Dùng khi người dùng nói "tắt cảnh báo <mã>", "tắt mọi cảnh báo", "bật lại cảnh báo"."""
+    return set_price_alerts_tool(enabled, ticker)
 
 
 @mcp.tool()

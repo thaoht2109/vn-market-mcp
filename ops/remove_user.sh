@@ -5,7 +5,8 @@
 #     setup (profile_routes, ids in default's allowlists that no other route uses) are removed from
 #     the files and dropped by the gateway at its next restart — until then they point to an unserved
 #     profile, which Hermes rejects
-#   - Postgres: their watchlist (watchlist_extra) and positions
+#   - Postgres: their watchlist (watchlist_extra), positions and price alerts (user_alerts, alert_prefs);
+#     their alert cron goes with the profile
 # Before deleting: Hermes config + a profile archive go to ~/.hermes/backups/remove_user-<stamp>/,
 # the DB rows to ./backups/remove_user-<tên>-<stamp>/*.csv. Shared data (runs, predictions,
 # market data) and job history are kept.
@@ -138,7 +139,7 @@ fi
 DB_BACKUP="backups/remove_user-$NAME-$STAMP"
 if [[ -n "$TG_ID" ]]; then
   mkdir -p "$DB_BACKUP"
-  for q in "watchlist_extra:added_by" "positions:declared_by"; do
+  for q in "watchlist_extra:added_by" "positions:declared_by" "user_alerts:user_id" "alert_prefs:user_id"; do
     psql_admin -c "COPY (SELECT * FROM ${q%%:*} WHERE ${q##*:} = '$TG_ID') TO STDOUT WITH CSV HEADER" > "$DB_BACKUP/${q%%:*}.csv"
   done
 fi
@@ -151,6 +152,8 @@ if [[ -n "$TG_ID" ]]; then
   psql_admin -q -c "BEGIN;
     DELETE FROM watchlist_extra WHERE added_by = '$TG_ID';
     DELETE FROM positions WHERE declared_by = '$TG_ID';
+    DELETE FROM user_alerts WHERE user_id = '$TG_ID';
+    DELETE FROM alert_prefs WHERE user_id = '$TG_ID';
     COMMIT;"
 fi
 

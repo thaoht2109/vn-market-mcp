@@ -161,3 +161,23 @@ def test_partition_creation_failure_alerts_ops_but_never_stops_the_scheduler(mon
     monkeypatch.setattr(scheduler, "send_ops_alert", alerts.append)
     scheduler._ensure_partitions(date(2026, 10, 6))  # must not raise
     assert len(alerts) == 1 and "partition" in alerts[0]
+
+
+def test_alert_check_runs_every_15_min_while_prices_move_on_trading_days(db_conn):
+    from ops.scheduler import _run_alert_check_if_due
+
+    seed_calendar_from_weekdays(db_conn, date(2020, 1, 6), date(2020, 1, 10), holidays=set())
+    fired: set[str] = set()
+    try:
+        _run_alert_check_if_due(db_conn, datetime(2020, 1, 7, 3, 15, tzinfo=timezone.utc), fired)  # 10:15 VN
+        _run_alert_check_if_due(db_conn, datetime(2020, 1, 7, 3, 15, tzinfo=timezone.utc), fired)  # same slot again
+        _run_alert_check_if_due(db_conn, datetime(2020, 1, 7, 5, 0, tzinfo=timezone.utc), fired)   # 12:00 VN: lunch
+        _run_alert_check_if_due(db_conn, datetime(2020, 1, 7, 8, 0, tzinfo=timezone.utc), fired)   # 15:00 VN: closed
+        _run_alert_check_if_due(db_conn, datetime(2020, 1, 11, 3, 15, tzinfo=timezone.utc), fired)  # Saturday
+        keys = [r[0] for r in db_conn.execute(
+            "SELECT job_key FROM jobs WHERE job_type = 'alert_check' AND job_key LIKE 'alert_check:%:2020-01-%'"
+        ).fetchall()]
+        assert keys == [f"alert_check:{MACRO_TICKER}:2020-01-07:1015"]
+    finally:
+        db_conn.execute("DELETE FROM jobs WHERE job_key LIKE 'alert_check:%:2020-01-%'")
+        db_conn.commit()

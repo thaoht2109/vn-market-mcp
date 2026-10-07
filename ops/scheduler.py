@@ -20,7 +20,7 @@ from llm.macro import MACRO_JOB_TYPE
 from mcp_server.connection import get_admin_conn, get_rw_conn
 from ops.alerting import log_event, send_ops_alert
 from pipeline.calendar import NoCalendarDataError, is_trading_day
-from pipeline.jobs import COLLECT_RSS_JOB_TYPE, enqueue
+from pipeline.jobs import ALERT_CHECK_JOB_TYPE, COLLECT_RSS_JOB_TYPE, enqueue
 from pipeline.news import ensure_news_partitions
 from pipeline.llm_gate import llm_pipeline_enabled
 
@@ -73,6 +73,37 @@ CLOSE_SYNC_RETRY_JOB_TYPE = "close_sync_retry"
 CLOSE_SYNC_RETRY_TRIGGER = (11, 0)
 CLOSE_SYNC_JOB_TYPES = (CLOSE_SYNC_JOB_TYPE, CLOSE_SYNC_RETRY_JOB_TYPE)
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+# Price-alert check (pipeline/price_alerts.py): one market-wide job every 15 min while prices move,
+# 09:15 (first matched bar) to 11:30 and 13:15 to 14:45 (ATC match on HOSE/HNX). One price-board
+# call covers every watched ticker. "Confirmed" alerts run after close_sync instead.
+ALERT_CHECK_SLOTS = {
+    (h, m) for h in range(9, 15) for m in (0, 15, 30, 45)
+    if (9, 15) <= (h, m) <= (11, 30) or (13, 15) <= (h, m) <= (14, 45)
+}
+
+
+def _run_alert_check_if_due(conn, now: datetime, already_fired_today: set[str]) -> None:
+    vn = now.astimezone(_VN_TZ)
+    if (vn.hour, vn.minute) not in ALERT_CHECK_SLOTS:
+        return
+    slot = f"{vn.hour:02d}{vn.minute:02d}"
+    fired_key = f"{ALERT_CHECK_JOB_TYPE}:{vn.date().isoformat()}:{slot}"
+    if fired_key in already_fired_today:
+        return
+    already_fired_today.add(fired_key)
+    try:
+        if not is_trading_day(conn, vn.date()):
+            return
+    except NoCalendarDataError:
+        log_event("scheduler_no_calendar_data", date=vn.date().isoformat())
+        return
+    job_key, created = enqueue(
+        conn, MACRO_TICKER, job_type=ALERT_CHECK_JOB_TYPE, requested_by="cron", schedule_date=vn.date(), slot=slot,
+    )
+    if created:
+        log_event("scheduler_enqueued", job_key=job_key, ticker=MACRO_TICKER, job_type=ALERT_CHECK_JOB_TYPE)
+
 
 # RSS news collection: one market-wide job per hour from 06:00 VN, every day (news does not stop at the
 # weekend). The job itself decides which sources are due (config/news_sources.yaml `every_minutes`).
@@ -202,6 +233,7 @@ def run_due_jobs(conn, now: datetime, already_fired_today: set[str]) -> None:
     _run_market_job_if_due(conn, now, already_fired_today, CLOSE_SYNC_JOB_TYPE, CLOSE_SYNC_TRIGGER)
     _run_market_job_if_due(conn, now, already_fired_today, CLOSE_SYNC_RETRY_JOB_TYPE, CLOSE_SYNC_RETRY_TRIGGER)
     _run_collect_if_due(conn, now, already_fired_today)
+    _run_alert_check_if_due(conn, now, already_fired_today)
 
 
 def _run_weekly_if_due(conn, now: datetime, already_fired_today: set[str]) -> None:

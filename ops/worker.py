@@ -23,7 +23,8 @@ from ops.scheduler import CLOSE_SYNC_JOB_TYPES, get_vn30_tickers
 from pipeline.collectors.rss import run_collect_rss
 from pipeline.collectors.indicators import run_all as collect_indicators
 from pipeline.ingest import sync_recent_prices
-from pipeline.jobs import COLLECT_JOB_TYPES, claim_next, mark_done, mark_failed, reclaim_stale_running, release, requeue
+from pipeline.jobs import ALERT_CHECK_JOB_TYPE, COLLECT_JOB_TYPES, claim_next, mark_done, mark_failed, reclaim_stale_running, release, requeue
+from pipeline.price_alerts import check_close, check_intraday
 from pipeline.run_analysis import run_analysis
 from providers.vnstock_provider import VNStockProvider
 
@@ -77,11 +78,20 @@ def _run_macro_premarket(conn) -> None:
 
 
 def _run_close_sync(conn) -> None:
-    today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date()
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).date()
     outcomes = sync_recent_prices(conn, VNStockProvider(source="VCI"), today)
     failed = [f"{o.ticker}: {o.detail}" for o in outcomes if o.status == "error"]
     rebased = [o.ticker for o in outcomes if o.detail and o.detail.startswith("rebased")]
     log_event("close_sync_done", synced=len(outcomes) - len(failed), rebased=rebased, failed=failed)
+    # Closing prices are final now: "confirmed" alerts. The 18:00 retry re-runs this for the
+    # tickers it fixed; already-sent conditions don't repeat (edge state + UNIQUE key).
+    settled = [o.ticker for o in outcomes if o.status != "error"]
+    log_event("price_alerts_confirmed", queued=check_close(conn, settled, today, now))
+
+
+def _run_alert_check(conn) -> None:
+    log_event("price_alerts_touched", queued=check_intraday(conn, VNStockProvider(source="VCI"), datetime.now(timezone.utc)))
 
 
 def _run_collect_rss(conn) -> None:
@@ -97,9 +107,12 @@ def run_one(conn) -> bool:
 
     log_event("worker_job_started", job_key=job.job_key, ticker=job.ticker, attempts=job.attempts)
     try:
-        if job.job_type == MACRO_JOB_TYPE or job.job_type in CLOSE_SYNC_JOB_TYPES or job.job_type in COLLECT_JOB_TYPES:
+        if (job.job_type in (MACRO_JOB_TYPE, ALERT_CHECK_JOB_TYPE) or job.job_type in CLOSE_SYNC_JOB_TYPES
+                or job.job_type in COLLECT_JOB_TYPES):
             if job.job_type == MACRO_JOB_TYPE:
                 _run_macro_premarket(conn)
+            elif job.job_type == ALERT_CHECK_JOB_TYPE:
+                _run_alert_check(conn)
             elif job.job_type in COLLECT_JOB_TYPES:
                 _run_collect_rss(conn)
             else:

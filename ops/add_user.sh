@@ -181,6 +181,8 @@ if ! grep -q "✓ telegram" <<<"$STATUS"; then
   exit 1
 fi
 docker exec "$HERMES" hermes -p "$NAME" mcp test vn-market-mcp 2>&1 | grep -E "Connected|Tools discovered|rror" || true
+echo "   cảnh báo giá vào chat riêng (cron không dùng LLM):"
+HERMES_CONTAINER="$HERMES" ops/setup_alerts_cron.sh "$NAME" | sed 's/^/   /'
 
 echo
 echo "Xong, không restart gateway. Sao lưu cấu hình cũ: ~/.hermes/backups/add_user-$STAMP/"

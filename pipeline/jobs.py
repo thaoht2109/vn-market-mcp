@@ -12,10 +12,13 @@ import psycopg
 # died) — safe to requeue rather than leave it stuck forever.
 STALE_RUNNING_AFTER = timedelta(minutes=15)
 
-# Claim order: market-wide collection jobs (one quick job, must not sit behind the ~30 tickers
-# queued at 15:05-15:30), then on_demand (a user is waiting in chat), then scheduled jobs.
+# Claim order: quick market-wide jobs (news collection, the 15-min price-alert check: one job each,
+# must not sit behind the ~30 tickers queued at 15:05-15:30), then on_demand (a user is waiting in
+# chat), then scheduled jobs.
 COLLECT_RSS_JOB_TYPE = "collect_rss"
 COLLECT_JOB_TYPES = (COLLECT_RSS_JOB_TYPE,)
+ALERT_CHECK_JOB_TYPE = "alert_check"
+_FIRST_JOB_TYPES = [*COLLECT_JOB_TYPES, ALERT_CHECK_JOB_TYPE]
 
 
 # Postgres advisory locks take a single bigint key; hash (ticker, job_type) into one so concurrent
@@ -91,7 +94,7 @@ def claim_next(conn: psycopg.Connection) -> Job | None:
         "SELECT id, job_key, job_type, ticker, style, depth, requested_by, attempts"
         " FROM jobs WHERE status = 'queued'"
         " ORDER BY (job_type = ANY(%s::text[])) DESC, (job_type = 'on_demand') DESC, created_at LIMIT 20",
-        (list(COLLECT_JOB_TYPES),),
+        (_FIRST_JOB_TYPES,),
     ).fetchall()
     for job_id, job_key, job_type, ticker, style, depth, requested_by, attempts in row:
         got_lock = conn.execute(
