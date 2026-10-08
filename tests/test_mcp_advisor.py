@@ -3,9 +3,14 @@ from datetime import date
 import pandas as pd
 
 from db.connection import get_conn
-from mcp_server.tools.advisor import _raw, get_advisor_input_tool, playbook, save_advice_tool
+from mcp_server.tools.advisor import _raw, get_advisor_input_tool, playbook, render_advice, save_advice_tool
 from ops.backtest_score import forward_excess, known_quarters, quarter_end
 from tests.test_mcp_stock_report import GOOD, RUN, TICKER, seeded  # noqa: F401  (fixture)
+
+
+def _advise(stance, extra=""):
+    reasons, plan, risk = GOOD.split(". ", 2)
+    return save_advice_tool(TICKER, RUN, stance, [reasons], [plan], risk + extra)["data"]
 
 
 def _clean():
@@ -25,14 +30,14 @@ def test_advisor_sees_no_label_and_its_first_view_is_kept_next_to_the_label(seed
         assert "**1. Kỹ thuật**" in data["input"] and "Chưa nắm giữ mã này." in data["input"]
         assert "**Nguyên tắc của cố vấn**" in data["input"] and "Ngành chưa có khung riêng" in data["input"]  # no group
 
-        assert save_advice_tool(TICKER, RUN, "hold", GOOD)["data"]["status"] == "rejected"  # not holding
-        bad = save_advice_tool(TICKER, RUN, "stay_out", GOOD + " Mục tiêu 999.")["data"]
+        assert _advise("hold")["status"] == "rejected"  # not holding
+        bad = _advise("stay_out", " Mục tiêu 999.")
         assert bad["status"] == "rejected" and "999" in bad["issues"][0]
 
-        saved = save_advice_tool(TICKER, RUN, "stay_out", GOOD)["data"]
+        saved = _advise("stay_out")
         assert saved["status"] == "saved" and "đứng ngoài" in saved["final"]
         assert "Khác nhãn hệ thống (theo dõi, chưa giải ngân)" in saved["final"]
-        again = save_advice_tool(TICKER, RUN, "watch", GOOD)["data"]
+        again = _advise("watch")
         assert "Khác nhãn hệ thống" in again["final"]  # first view wins
         assert get_advisor_input_tool(TICKER, RUN)["data"] == {"status": "advised", "final": saved["final"]}
         with get_conn() as conn:
@@ -75,3 +80,13 @@ def test_advisor_gets_raw_macro_and_headlines_without_score_or_judgment():
     assert _raw("- Tin 07/10: Lãi suất giảm (cafef) → trợ lý đánh giá tốt: chi phí vốn thấp") \
         == "- Tin 07/10: Lãi suất giảm (cafef)"
     assert _raw("- VN-Index 1.650,20 (+0,5%); xu hướng tăng.") == "- VN-Index 1.650,20 (+0,5%); xu hướng tăng."
+
+
+def test_advice_is_laid_out_as_sections_with_figures_in_bold():
+    stored = ('{"reasons": ["Giá dưới MA20 20.705 (-2,7%), RSI(14) 23,1."], "plan": ["Nếu thủng 19.600đ thì đứng ngoài."],'
+              ' "risk": "Cắt lỗ 70.657."}')
+    out = render_advice("watch", "watch", stored)
+    assert out.splitlines()[1:6] == ["**Lý do**", "- Giá dưới MA20 **20.705** (**-2,7%**), RSI(**14**) **23,1**.",
+                                     "**Kế hoạch**", "- Nếu thủng **19.600đ** thì đứng ngoài.", "**Rủi ro lớn nhất**"]
+    assert "MA20" in out and "**theo dõi, chưa giải ngân**" in out and out.endswith("_Trùng với nhãn hệ thống._")
+    assert "Cổ phiếu cũ" in render_advice("watch", None, "Cổ phiếu cũ")  # rows saved before the layout

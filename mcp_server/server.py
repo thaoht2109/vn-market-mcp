@@ -168,13 +168,13 @@ def get_advisor_input(ticker: str, run_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def save_advice(ticker: str, run_id: str, stance: str, advice: str) -> dict[str, Any]:
+def save_advice(ticker: str, run_id: str, stance: str, reasons: list[str], plan: list[str], risk: str) -> dict[str, Any]:
     """Kiểm tra rồi lưu góc nhìn cố vấn (stance phải thuộc data.stances của get_advisor_input).
 
     status='saved' → gửi nguyên văn data.final. status='rejected' → KHÔNG gửi; sửa đúng data.issues rồi gọi lại
-    (số liệu phải có trong dữ liệu cố vấn, không từ ngữ nội bộ, 80–220 từ). Góc nhìn đầu tiên được giữ.
+    (số liệu phải có trong dữ liệu cố vấn, không từ ngữ nội bộ; reasons, plan, risk có nội dung, tổng 80–220 từ). Góc nhìn đầu tiên được giữ.
     """
-    return save_advice_tool(ticker, run_id, stance, advice)
+    return save_advice_tool(ticker, run_id, stance, reasons, plan, risk)
 
 
 @mcp.tool()
