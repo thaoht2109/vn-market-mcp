@@ -119,7 +119,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `pipeline/price_alerts.py` | Cảnh báo giá theo mốc của nhận định chính thức (xem "Cảnh báo giá") |
 | `mcp_server/` | MCP server và 21 tool; `identity.py` xác định người gọi (`VNMCP_USER_ID`) |
 | `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, `backup.sh` (DB) / `backup_hermes.sh` (toàn bộ `~/.hermes`), `add_user.sh` / `remove_user.sh` (thêm / xóa người dùng), `pending_alerts.py` + `setup_alerts_cron.sh` (gửi cảnh báo giá qua cron Hermes) |
-| `db/` | Migrations (`001`–`022`), tạo role, tạo DB test |
+| `db/` | Migrations (`001`–`023`), tạo role, tạo DB test |
 | `llm/`, `schemas/` | Các vai trò LLM trong pipeline (đang **tắt**, giữ lại để bật sau) |
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
 | `docs/` | `design/` (thiết kế tổng thể), `superpowers/plans`, `superpowers/specs` (kế hoạch và spec từng giai đoạn), `archive/` (ghi chú cũ). Không đưa vào image |
@@ -567,7 +567,8 @@ Repo đặt ở đường dẫn khác thì khai báo `VN_MARKET_MCP_DIR`; script
 | Giá lịch sử có khoảng trống giả quanh ngày GDKHQ | Vendor đã điều chỉnh giá. close_sync tự tải lại; kiểm tra log `close_sync_done` → `rebased` |
 | Kết nối DB treo tới timeout | URL đang dùng `postgres:5432`. Đổi sang `postgres:5433` |
 | Hermes báo `Failed to parse JSONRPC message` | Có code in ra stdout. Mọi log phải đi qua stderr |
-| `worker_job_rate_limited` trong log | Chạm giới hạn vnstock. Worker tự chờ 65 giây. Không nên tăng số bản sao worker |
+| `worker_job_rate_limited` trong log | Vẫn chạm giới hạn vnstock dù mọi lệnh gọi đã đi qua ngân sách chung (`providers/rate_limit.py`, 50 lần/phút cho mọi worker và MCP server, bảng `api_budget`): thường do vnstock tự gọi thêm. Worker chờ 65 giây rồi thử lại; job đồng bộ giữ phần đã xong. Quá 20 lần thì job chuyển `failed` và nhóm ops được báo. Hạ `CALLS_PER_MINUTE` nếu gặp thường xuyên |
+| Ops nhận "job quá hạn bị bỏ" | Hàng đợi bị nghẽn: `close_sync` của ngày đã qua hoặc lượt trong phiên quá 90 phút chưa chạy thì bị bỏ (`expire_stale_jobs`), vì lần sau thay thế được. Xem job nào đang chiếm worker trong bảng `jobs` (`status = 'running'`, `attempts` lớn) |
 
 ## 15. Hạn chế đã biết
 
@@ -610,3 +611,4 @@ Các thay đổi lớn về cách dùng nhiều người (tháng 10/2026), mới
 | Cảnh báo giá vào chat riêng: vào vùng mua / chạm cắt lỗ / đạt mục tiêu theo nhận định chính thức, trong phiên mỗi 15 phút và theo giá đóng cửa; báo theo chuyển trạng thái, vùng đệm 1%, tối đa 1 tin mỗi điều kiện mỗi phiên; tắt bằng chat (tool `set_price_alerts`) | `020` | Sau migration chạy lại `python -m db.setup_roles`; `docker compose up -d --build worker scheduler`; `ops/setup_alerts_cron.sh <tên>` cho từng người dùng đã có; restart Hermes gateway để nạp tool và skill mới |
 | Điểm vĩ mô tính bằng quy tắc vào điểm chính thức (độ phủ 70% → 85%); Hermes chấm tin tốt/xấu cho tin trong báo cáo (tool `judge_news`), báo cáo in thêm điểm tham khảo gồm tin tức, không đổi nhãn | `021` | Sau migration chạy lại `python -m db.setup_roles`; `docker compose up -d --build worker scheduler`; restart Hermes gateway để nạp tool và skill mới. Điểm mới áp dụng từ lần chạy kế tiếp; nhãn của mã gần ngưỡng (55, 40, 70) có thể đổi |
 | Góc nhìn cố vấn độc lập (sub-agent Hermes không thấy nhãn; tool `get_advisor_input`, `save_advice`) lưu kèm nhãn để chấm; `ops/backtest_score.py` kiểm chứng công thức trên lịch sử | `022` | Sau migration chạy lại `python -m db.setup_roles`; restart Hermes gateway để nạp tool và skill mới (không cần build lại worker) |
+| Chặn treo hàng đợi do giới hạn vnstock: ngân sách lệnh gọi chung mọi tiến trình (`api_budget`), khối ngoại của `close_sync` gộp một lệnh gọi, `close_sync` lưu từng mã và bỏ mã đã xong, dùng ngày của job; `close_sync_retry` chung khóa với `close_sync`; job quá hạn bị bỏ, bị chặn quá 20 lần thì `failed`, cả hai đều báo ops | `023` | Sau migration chạy lại `python -m db.setup_roles`; `docker compose up -d --build worker scheduler`; restart Hermes gateway để MCP server dùng ngân sách chung |

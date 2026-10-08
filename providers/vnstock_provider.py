@@ -9,6 +9,8 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from providers.rate_limit import wait_for_slot
+
 _CONFIG_PATH = Path(__file__).parent.parent / "config" / "vn-rules.yaml"
 
 
@@ -158,6 +160,9 @@ class VNStockProvider:
         self.source = source
         self.scale_map = scale_map or _load_price_unit_scale()
         self._clients = clients or {}
+        # Real network clients share one request budget with every other process (providers/rate_limit.py);
+        # injected test clients make no requests.
+        self._throttle = wait_for_slot if clients is None else (lambda: None)
 
     def _quote(self, ticker: str) -> Any:
         if "quote" in self._clients:
@@ -199,6 +204,7 @@ class VNStockProvider:
             from vnstock.api.listing import Listing
 
             listing = Listing()
+        self._throttle()
         df = listing.symbols_by_exchange()
         rows = df[df["symbol"] == ticker]
         if rows.empty:
@@ -214,11 +220,13 @@ class VNStockProvider:
         per-source VND scale factor (×1000 for VCI) doesn't apply to an
         index's point value, unlike get_ohlcv's per-ticker VND prices.
         """
+        self._throttle()
         raw = self._quote(symbol).history(symbol=symbol, start=start.isoformat(), end=end.isoformat())
         return raw.rename(columns={"time": "trade_date"})
 
     def get_ohlcv(self, ticker: str, start: date, end: date) -> list[PriceBar]:
         fetched_at = datetime.now(timezone.utc)
+        self._throttle()
         raw = self._quote(ticker).history(symbol=ticker, start=start.isoformat(), end=end.isoformat())
         bars = []
         for row in raw.to_dict("records"):
@@ -258,6 +266,7 @@ class VNStockProvider:
         # four OLDEST quarters (2018 for most VN30 tickers). Ask for all rows
         # and pick the newest ourselves.
         # ponytail: private vnstock method; re-check on vnstock upgrades.
+        self._throttle()
         raw = self._finance(ticker)._get_financial_report(
             "ratio", period="quarter", lang="en", limit=_ALL_PERIODS
         )
@@ -285,6 +294,7 @@ class VNStockProvider:
         check all watched tickers every 15 min, so one call per ticker would burn the rate limit.
         A ticker with no match yet (price 0) is left out."""
         # ponytail: one request for the whole list; chunk it if KBS ever caps the board size.
+        self._throttle()
         board = self._trading().price_board(symbols_list=tickers)
         return {
             str(row["symbol"]): float(row["close_price"])
@@ -299,32 +309,39 @@ class VNStockProvider:
         callers get a single record for "now" and must upsert daily to build
         history (ponytail: no backfill possible, only accrues going forward).
         """
+        return self.get_foreign_flow_board([ticker]).get(ticker, [])
+
+    def get_foreign_flow_board(self, tickers: list[str]) -> dict[str, list[ForeignFlowRecord]]:
+        """get_foreign_flow for many tickers in ONE price-board request (close_sync: one call, not 34)."""
         fetched_at = datetime.now(timezone.utc)
-        board = self._trading().price_board(symbols_list=[ticker])
-        if board.empty:
-            return []
-        row = board.iloc[0]
-        # KBS board prices are already full VND (MWG 72500, verified 2026-10-02);
-        # the per-source scale_map is for VCI history and would inflate this ×1000.
-        close_price = float(row["close_price"])
-        buy_value = float(row["foreign_buy_volume"]) * close_price
-        sell_value = float(row["foreign_sell_volume"]) * close_price
-        room_left = row.get("foreign_room")
-        return [
-            ForeignFlowRecord(
-                ticker=ticker,
-                trade_date=_to_date(datetime.fromtimestamp(int(row["time"]) / 1000, tz=timezone.utc)),
-                buy_value=buy_value,
-                sell_value=sell_value,
-                net_value=buy_value - sell_value,
-                room_left=float(room_left) if room_left is not None else None,
-                source="KBS",
-                fetched_at=fetched_at,
-            )
-        ]
+        self._throttle()
+        board = self._trading().price_board(symbols_list=tickers)
+        out: dict[str, list[ForeignFlowRecord]] = {}
+        for i, row in enumerate(board.to_dict("records")):
+            ticker = str(row.get("symbol") or tickers[i])  # single-ticker boards may omit the symbol
+            # KBS board prices are already full VND (MWG 72500, verified 2026-10-02);
+            # the per-source scale_map is for VCI history and would inflate this ×1000.
+            close_price = float(row["close_price"])
+            buy_value = float(row["foreign_buy_volume"]) * close_price
+            sell_value = float(row["foreign_sell_volume"]) * close_price
+            room_left = row.get("foreign_room")
+            out[ticker] = [
+                ForeignFlowRecord(
+                    ticker=ticker,
+                    trade_date=_to_date(datetime.fromtimestamp(int(row["time"]) / 1000, tz=timezone.utc)),
+                    buy_value=buy_value,
+                    sell_value=sell_value,
+                    net_value=buy_value - sell_value,
+                    room_left=float(room_left) if room_left is not None else None,
+                    source="KBS",
+                    fetched_at=fetched_at,
+                )
+            ]
+        return out
 
     def get_corporate_events(self, ticker: str, start: date, end: date) -> list[CorporateEvent]:
         fetched_at = datetime.now(timezone.utc)
+        self._throttle()
         raw = self._company(ticker).events()  # no start/end param in vnstock.api; filter after fetch
         events = []
         for row in raw.to_dict("records"):
@@ -354,6 +371,7 @@ class VNStockProvider:
         the source didn't provide — spec §5.7.3 "chỉ dùng nội dung trong đầu
         vào; không có thông tin thì trả no_info")."""
         fetched_at = datetime.now(timezone.utc)
+        self._throttle()
         raw = self._company(ticker).news()
         items = []
         for row in raw.to_dict("records"):

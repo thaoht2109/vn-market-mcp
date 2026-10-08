@@ -230,8 +230,8 @@ class _SyncProvider:
         self.calls.append((ticker, start))
         return [_bar(ticker, d, close=c) for d, c in self.closes.items() if start <= d <= end]
 
-    def get_foreign_flow(self, ticker, start, end):
-        return []
+    def get_foreign_flow_board(self, tickers):
+        return {}
 
 
 def _stored(ticker, d, close, fetched_at):

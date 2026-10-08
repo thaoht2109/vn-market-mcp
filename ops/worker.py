@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from llm.client import LLMCallError
 from llm.config import ModelsConfig
@@ -23,7 +22,8 @@ from ops.scheduler import CLOSE_SYNC_JOB_TYPES, get_vn30_tickers
 from pipeline.collectors.rss import run_collect_rss
 from pipeline.collectors.indicators import run_all as collect_indicators
 from pipeline.ingest import sync_recent_prices
-from pipeline.jobs import ALERT_CHECK_JOB_TYPE, COLLECT_JOB_TYPES, claim_next, mark_done, mark_failed, reclaim_stale_running, release, requeue
+from pipeline.jobs import (ALERT_CHECK_JOB_TYPE, COLLECT_JOB_TYPES, claim_next, expire_stale_jobs, mark_done,
+                           mark_failed, reclaim_stale_running, release, requeue)
 from pipeline.price_alerts import check_close, check_intraday
 from pipeline.run_analysis import run_analysis
 from providers.vnstock_provider import VNStockProvider
@@ -31,6 +31,9 @@ from providers.vnstock_provider import VNStockProvider
 SNAPSHOT_DIR = Path("snapshots")
 POLL_INTERVAL_S = 5
 RATE_LIMIT_BACKOFF_S = 65
+# Rate-limited this many times = something keeps blowing the budget: fail and tell ops instead of
+# requeueing forever (close_sync for 07/10/2026 was retried 1,024 times, silently, for 19 hours).
+MAX_RATE_LIMITED_ATTEMPTS = 20
 
 
 def _setup_vnstock_api_key() -> None:
@@ -77,10 +80,10 @@ def _run_macro_premarket(conn) -> None:
         send_ops_alert(f"[Trước phiên] {result.summary}")
 
 
-def _run_close_sync(conn) -> None:
+def _run_close_sync(conn, job_key: str) -> None:
     now = datetime.now(timezone.utc)
-    today = now.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).date()
-    outcomes = sync_recent_prices(conn, VNStockProvider(source="VCI"), today)
+    today = date.fromisoformat(job_key.split(":")[2])  # the job's session, not the day it finally runs
+    outcomes = sync_recent_prices(conn, VNStockProvider(source="VCI"), today, commit_each=True)
     failed = [f"{o.ticker}: {o.detail}" for o in outcomes if o.status == "error"]
     rebased = [o.ticker for o in outcomes if o.detail and o.detail.startswith("rebased")]
     log_event("close_sync_done", synced=len(outcomes) - len(failed), rebased=rebased, failed=failed)
@@ -116,7 +119,7 @@ def run_one(conn) -> bool:
             elif job.job_type in COLLECT_JOB_TYPES:
                 _run_collect_rss(conn)
             else:
-                _run_close_sync(conn)
+                _run_close_sync(conn, job.job_key)
             mark_done(conn, job, None)
             release(conn, job)
             log_event("worker_job_finished", job_key=job.job_key, ticker=job.ticker, status="ok")
@@ -127,6 +130,12 @@ def run_one(conn) -> bool:
         )
     except BaseException as exc:  # vnstock rate-limit exits raise SystemExit, not Exception
         conn.rollback()
+        if isinstance(exc, SystemExit) and job.attempts >= MAX_RATE_LIMITED_ATTEMPTS:
+            mark_failed(conn, job, f"rate limited {job.attempts} times")
+            release(conn, job)
+            log_event("worker_job_gave_up", job_key=job.job_key, attempts=job.attempts)
+            send_ops_alert(f"[vn-market-mcp] Bỏ job {job.job_key}: vnstock chặn vì vượt giới hạn {job.attempts} lần liên tiếp")
+            return True
         if isinstance(exc, SystemExit):
             requeue(conn, job)
             release(conn, job)
@@ -162,6 +171,11 @@ def main() -> None:
     while True:
         with get_rw_conn() as conn:
             reclaim_stale_running(conn)
+            expired = expire_stale_jobs(conn)
+            if expired:
+                log_event("worker_jobs_expired", job_keys=expired)
+                send_ops_alert(f"[vn-market-mcp] {len(expired)} job quá hạn bị bỏ trước khi chạy: " + ", ".join(expired[:5])
+                               + (" …" if len(expired) > 5 else ""))
             processed = run_one(conn)
         if not processed:
             time.sleep(POLL_INTERVAL_S)
