@@ -56,6 +56,9 @@ def fetch_futures(client: httpx.Client) -> list[tuple]:
 def fetch_sjc(_client: httpx.Client) -> list[tuple]:
     from vnstock.explorer.misc.gold_price import sjc_gold_price  # heavy import, worker only
 
+    from providers.rate_limit import wait_for_slot
+
+    wait_for_slot()  # vnstock counts this call against the same per-minute limit
     df = sjc_gold_price()
     if df is None or df.empty:
         raise FeedError("SJC: empty price table")

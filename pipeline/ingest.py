@@ -156,7 +156,8 @@ RECENT_DAYS = 10
 ADJUSTMENT_TOLERANCE = 0.001
 
 
-def _sync_ticker(conn: psycopg.Connection, provider, ticker: str, today: date) -> IngestOutcome:
+def _sync_ticker(conn: psycopg.Connection, provider, ticker: str, today: date,
+                 flow: list | Exception) -> IngestOutcome:
     start = today - timedelta(days=RECENT_DAYS)
     # Only bars stored AFTER their own close count as reference: mid-session
     # bars legitimately differ from the final ones.
@@ -193,21 +194,41 @@ def _sync_ticker(conn: psycopg.Connection, provider, ticker: str, today: date) -
 
     # The KBS board has no history, only "now": taken after the close it is the final
     # figure and overwrites the mid-session snapshot stored for today.
-    try:
-        upsert_foreign_flow(conn, provider.get_foreign_flow(ticker, start, today))
-    except Exception as exc:
-        return IngestOutcome(ticker=ticker, status="error", detail=f"foreign flow: {exc}", rows_written=rows)
+    if isinstance(flow, Exception):
+        return IngestOutcome(ticker=ticker, status="error", detail=f"foreign flow: {flow}", rows_written=rows)
+    upsert_foreign_flow(conn, flow)
     return IngestOutcome(ticker=ticker, status="ok", detail=detail, rows_written=rows)
 
 
-def sync_recent_prices(conn: psycopg.Connection, provider, today: date) -> list[IngestOutcome]:
+def sync_recent_prices(conn: psycopg.Connection, provider, today: date, commit_each: bool = False) -> list[IngestOutcome]:
     """After-close sync for every ticker with a recent bar: final OHLCV and foreign
-    flow, plus detection/repair of vendor price re-basing (see _sync_ticker)."""
+    flow, plus detection/repair of vendor price re-basing (see _sync_ticker).
+
+    Resumable: a ticker whose `today` bar was already stored after the close is skipped, and with
+    commit_each every finished ticker is committed at once — a rate-limit exit mid-way (vnstock raises
+    SystemExit, the worker rolls back and requeues) then loses only the ticker in flight, instead of
+    redoing all of them on every attempt and never finishing. Foreign flow for all pending tickers
+    is one price-board request."""
     tickers = [r[0] for r in conn.execute(
-        "SELECT DISTINCT ticker FROM prices_daily WHERE trade_date >= %s ORDER BY ticker",
-        (today - timedelta(days=RECENT_DAYS),),
+        "SELECT DISTINCT ticker FROM prices_daily WHERE trade_date >= %s"
+        " AND ticker NOT IN (SELECT ticker FROM prices_daily WHERE trade_date = %s"
+        "   AND fetched_at >= (trade_date + time '15:00') AT TIME ZONE 'Asia/Ho_Chi_Minh')"
+        " ORDER BY ticker",
+        (today - timedelta(days=RECENT_DAYS), today),
     ).fetchall()]
-    return [_sync_ticker(conn, provider, t, today) for t in tickers]
+    if not tickers:
+        return []
+    try:
+        board = provider.get_foreign_flow_board(tickers)
+        flows = {t: board.get(t, []) for t in tickers}
+    except Exception as exc:
+        flows = {t: exc for t in tickers}
+    outcomes = []
+    for t in tickers:
+        outcomes.append(_sync_ticker(conn, provider, t, today, flows[t]))
+        if commit_each:
+            conn.commit()
+    return outcomes
 
 
 def assert_batch_ok(outcomes: list[IngestOutcome]) -> None:
