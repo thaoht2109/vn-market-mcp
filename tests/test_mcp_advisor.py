@@ -3,7 +3,7 @@ from datetime import date
 import pandas as pd
 
 from db.connection import get_conn
-from mcp_server.tools.advisor import get_advisor_input_tool, playbook, save_advice_tool
+from mcp_server.tools.advisor import _raw, get_advisor_input_tool, playbook, save_advice_tool
 from ops.backtest_score import forward_excess, known_quarters, quarter_end
 from tests.test_mcp_stock_report import GOOD, RUN, TICKER, seeded  # noqa: F401  (fixture)
 
@@ -67,3 +67,11 @@ def test_backtest_uses_only_published_quarters_and_excess_over_equal_weight_memb
     x = forward_excess(prices, ["A", "B"], days, 0, 2, ["A", "B"])
     assert round(x["A"], 6) == 0.1 and round(x["B"], 6) == -0.1  # A +20%, B 0%, bench +10%
     assert forward_excess(prices, ["A", "B"], days, 1, 2, ["A"]) == {}  # horizon past the data
+
+
+def test_advisor_gets_raw_macro_and_headlines_without_score_or_judgment():
+    assert _raw("- Vĩ mô 55,0/100 (trung tính): CPI so với cùng kỳ 3,10% (tháng 09/2026).") \
+        == "- Vĩ mô: CPI so với cùng kỳ 3,10% (tháng 09/2026)."
+    assert _raw("- Tin 07/10: Lãi suất giảm (cafef) → trợ lý đánh giá tốt: chi phí vốn thấp") \
+        == "- Tin 07/10: Lãi suất giảm (cafef)"
+    assert _raw("- VN-Index 1.650,20 (+0,5%); xu hướng tăng.") == "- VN-Index 1.650,20 (+0,5%); xu hướng tăng."
