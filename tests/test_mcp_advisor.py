@@ -3,7 +3,7 @@ from datetime import date
 import pandas as pd
 
 from db.connection import get_conn
-from mcp_server.tools.advisor import get_advisor_input_tool, save_advice_tool
+from mcp_server.tools.advisor import get_advisor_input_tool, playbook, save_advice_tool
 from ops.backtest_score import forward_excess, known_quarters, quarter_end
 from tests.test_mcp_stock_report import GOOD, RUN, TICKER, seeded  # noqa: F401  (fixture)
 
@@ -22,6 +22,7 @@ def test_advisor_sees_no_label_and_its_first_view_is_kept_next_to_the_label(seed
         assert data["status"] == "ok" and data["stances"] == ["buy_accumulate", "watch", "stay_out"]
         assert "Kết luận" not in data["input"] and "theo dõi, chưa giải ngân" not in data["input"]
         assert "**1. Kỹ thuật**" in data["input"] and "Chưa nắm giữ mã này." in data["input"]
+        assert "**Nguyên tắc của cố vấn**" in data["input"] and "Ngành chưa có khung riêng" in data["input"]  # no group
 
         assert save_advice_tool(TICKER, RUN, "hold", GOOD)["data"]["status"] == "rejected"  # not holding
         bad = save_advice_tool(TICKER, RUN, "stay_out", GOOD + " Mục tiêu 999.")["data"]
@@ -33,6 +34,9 @@ def test_advisor_sees_no_label_and_its_first_view_is_kept_next_to_the_label(seed
         again = save_advice_tool(TICKER, RUN, "watch", GOOD)["data"]
         assert "Khác nhãn hệ thống" in again["final"]  # first view wins
         assert get_advisor_input_tool(TICKER, RUN)["data"] == {"status": "advised", "final": saved["final"]}
+        with get_conn() as conn:
+            version = conn.execute("SELECT playbook_version FROM advisor_views WHERE ticker = %s", (TICKER,)).fetchone()[0]
+        assert version == playbook(None)[1] and len(version) == 8
 
         monkeypatch.setenv("VNMCP_USER_ID", "tadv2")  # another user: own position, own view
         with get_conn() as conn:
@@ -42,6 +46,12 @@ def test_advisor_sees_no_label_and_its_first_view_is_kept_next_to_the_label(seed
         assert held["stances"] == ["hold", "reduce_exit"] and "giá vốn 95 → +5,3% so với giá 100" in held["input"]
     finally:
         _clean()
+
+
+def test_playbook_gives_the_common_rules_plus_the_ticker_industry():
+    banks, version = playbook("Banks")
+    assert "Một mã không quá 20% danh mục" in banks and "nợ xấu" in banks and "Ngành chưa có khung riêng" not in banks
+    assert "Ngành chưa có khung riêng" in playbook("Không có ngành này")[0] and playbook("Retail")[1] == version
 
 
 def test_backtest_uses_only_published_quarters_and_excess_over_equal_weight_members():

@@ -184,25 +184,26 @@ def report(df: pd.DataFrame) -> str:
 
 def advisor_report(conn, members, prices) -> str:
     """Advisor stance vs system label on the 20-session forward excess, per saved view."""
-    rows = conn.execute("SELECT ticker, stance, code_label, created_at FROM advisor_views ORDER BY created_at").fetchall()
+    rows = conn.execute("SELECT ticker, stance, code_label, created_at, coalesce(playbook_version, '-')"
+                        " FROM advisor_views ORDER BY created_at").fetchall()
     if not rows:
         return "\n== Cố vấn ==\nChưa có góc nhìn cố vấn nào được lưu."
     dates = session_dates(members, prices)
     h, graded = HORIZONS[0], []
-    for ticker, stance, code_label, created in rows:
+    for ticker, stance, code_label, created, version in rows:
         day = created.astimezone(_VN_TZ).date()
         i = next((k for k, d in enumerate(dates) if d >= day), None)
         x = forward_excess(prices, members, dates, i, h, [ticker]).get(ticker) if i is not None else None
         if x is not None:
-            graded.append((DIRECTION.get(stance, 0), DIRECTION.get(code_label, 0), x))
+            graded.append((version, DIRECTION.get(stance, 0), DIRECTION.get(code_label, 0), x))
     lines = [f"\n== Cố vấn ({len(rows)} góc nhìn, {len(graded)} đã đủ {h} phiên để chấm) =="]
-    differ = [g for g in graded if g[0] != g[1]]
-    if graded:
-        lines.append(f"Cùng hướng với nhãn hệ thống: {len(graded) - len(differ)}; khác hướng: {len(differ)}.")
-    if differ:
+    for version in sorted({g[0] for g in graded}):
+        g = [x[1:] for x in graded if x[0] == version]
+        differ = [x for x in g if x[0] != x[1]]
         adv = sum(1 for a, _, x in differ if a * x > 0)
         sys_ = sum(1 for _, s, x in differ if s * x > 0)
-        lines.append(f"Khi khác hướng: cố vấn đúng {adv}, hệ thống đúng {sys_} (trung lập không tính).")
+        lines.append(f"Playbook {version}: {len(g)} góc nhìn, cùng hướng nhãn {len(g) - len(differ)}, khác hướng {len(differ)}"
+                     + (f" (khi khác: cố vấn đúng {adv}, hệ thống đúng {sys_}; trung lập không tính)." if differ else "."))
     return "\n".join(lines)
 
 

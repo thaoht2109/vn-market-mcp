@@ -1,15 +1,17 @@
 """get_advisor_input / save_advice: an independent advisor view next to the system label.
 
 A Hermes sub-agent playing a financial adviser gets the code-rendered report with the conclusion cut
-out (label, score, confidence, reference score) plus the asking user's own position, and makes its own
-call. It never sees the label first, so it can't just argue for it; the server stores the label that
+out (label, score, confidence, reference score), the asking user's own position and the playbook rules
+for the ticker's industry (config/advisor-playbook.md), and makes its own call. It never sees the label first, so it can't just argue for it; the server stores the label that
 user saw next to the call, to score both on later prices (ops/backtest_score.py). The official label
 and predictions are never touched.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 
 from mcp_server.connection import get_ro_conn, get_rw_conn
 from mcp_server.envelope import build_envelope
@@ -23,13 +25,30 @@ _STANCE_VI = {"buy_accumulate": "tích lũy dần", "watch": "theo dõi, chưa g
               "hold": "tiếp tục nắm giữ", "reduce_exit": "giảm tỷ trọng"}
 _HIDDEN = ("**Kết luận:**", "_Tính thêm", "_Tín hiệu trong phiên")
 _MACRO_SCORE = re.compile(r"Vĩ mô [\d.,]+/100 \([^)]*\): ")
+_PLAYBOOK = Path(__file__).resolve().parents[2] / "config" / "advisor-playbook.md"
 
 
-def _advisor_input(conn, ticker: str, user: str | None, report: str, run_as_of: datetime) -> tuple[str, bool]:
-    """(report without the system's conclusion + the user's position, whether they hold the ticker)."""
+def playbook(industry_group: str | None) -> tuple[str, str]:
+    """(the "Chung" section + the ticker's industry section, else "Khác"; file version = sha256[:8])."""
+    raw = _PLAYBOOK.read_text()
+    sections = {}
+    for chunk in raw.split("\n## ")[1:]:
+        title, _, body = chunk.partition("\n")
+        sections[title.strip()] = body.strip()
+    own = sections.get(industry_group or "", sections["Khác"])
+    return (f"**Nguyên tắc của cố vấn**\n{sections['Chung']}\n\n{own}",
+            hashlib.sha256(raw.encode()).hexdigest()[:8])
+
+
+def _advisor_input(conn, ticker: str, user: str | None, report: str, run_as_of: datetime) -> tuple[str, bool, str]:
+    """(report without the system's conclusion + the user's position + the playbook, whether they hold
+    the ticker, playbook version)."""
     text = _MACRO_SCORE.sub("Vĩ mô: ", "\n\n".join(p for p in report.split("\n\n") if not p.startswith(_HIDDEN)))
+    group = (conn.execute("SELECT industry_group FROM tickers WHERE ticker = %s", (ticker,)).fetchone() or [None])[0]
+    rules, version = playbook(group)
     if user is None:
-        return text + "\n\n**Vị thế của người hỏi**\n- Nhóm chung, không có danh mục riêng: xem như chưa nắm giữ.", False
+        return (text + "\n\n**Vị thế của người hỏi**\n- Nhóm chung, không có danh mục riêng: xem như chưa nắm giữ."
+                + "\n\n" + rules, False, version)
     close = float(conn.execute(
         "SELECT close FROM prices_daily WHERE ticker = %s AND trade_date <= %s::date ORDER BY trade_date DESC LIMIT 1",
         (ticker, run_as_of.astimezone().date()),
@@ -45,12 +64,11 @@ def _advisor_input(conn, ticker: str, user: str | None, report: str, run_as_of: 
         "SELECT p.ticker, t.industry_group FROM positions p LEFT JOIN tickers t USING (ticker)"
         " WHERE p.declared_by = %s AND p.status = 'holding' AND p.ticker <> %s ORDER BY p.ticker", (user, ticker),
     ).fetchall()
-    group = (conn.execute("SELECT industry_group FROM tickers WHERE ticker = %s", (ticker,)).fetchone() or [None])[0]
     same = [t for t, g in others if g and g == group and g != "other"]
     lines.append(("Các mã khác đang giữ: " + ", ".join(t for t, _ in others)
                   + (f"; cùng ngành với {ticker}: {', '.join(same)}" if same else "") + ".") if others
                  else "Không giữ mã nào khác.")
-    return text + "\n\n**Vị thế của người hỏi**\n" + "\n".join("- " + l for l in lines), holding
+    return text + "\n\n**Vị thế của người hỏi**\n" + "\n".join("- " + l for l in lines) + "\n\n" + rules, holding, version
 
 
 def render_advice(stance: str, code_label: str | None, advice: str) -> str:
@@ -73,7 +91,7 @@ def get_advisor_input_tool(ticker: str, run_id: str) -> dict:
         saved = _saved(conn, user or "shared", run_id)
         if saved:
             return build_envelope({"status": "advised", "final": render_advice(*saved)}, sources=["postgres"], as_of=now)
-        text, holding = _advisor_input(conn, ticker, user, loaded[0], loaded[2])
+        text, holding, _version = _advisor_input(conn, ticker, user, loaded[0], loaded[2])
     return build_envelope({"status": "ok", "input": text, "stances": list(STANCES[holding])},
                           sources=["postgres", "snapshot_file"], as_of=loaded[2])
 
@@ -87,16 +105,16 @@ def save_advice_tool(ticker: str, run_id: str, stance: str, advice: str) -> dict
     if loaded is None:
         return build_envelope({"status": "not_saved", "reason": err}, sources=["postgres"], as_of=now)
     with get_ro_conn() as conn:
-        text, holding = _advisor_input(conn, ticker, user, loaded[0], loaded[2])
+        text, holding, version = _advisor_input(conn, ticker, user, loaded[0], loaded[2])
     issues = [] if stance in STANCES[holding] else [f"stance phải là một trong: {', '.join(STANCES[holding])}"]
     issues += verify_commentary(advice, text, stance)
     if issues:
         return build_envelope({"status": "rejected", "issues": issues}, sources=["postgres"], as_of=now)
     with get_rw_conn() as conn:
         conn.execute(
-            "INSERT INTO advisor_views (user_id, run_id, ticker, holding, stance, code_label, advice)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (user or "shared", run_id, ticker, holding, stance, loaded[3], advice),
+            "INSERT INTO advisor_views (user_id, run_id, ticker, holding, stance, code_label, advice, playbook_version)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            (user or "shared", run_id, ticker, holding, stance, loaded[3], advice, version),
         )
         saved = _saved(conn, user or "shared", run_id)
     return build_envelope({"status": "saved", "final": render_advice(*saved)}, sources=["postgres"], as_of=now)
