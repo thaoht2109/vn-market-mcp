@@ -10,7 +10,6 @@ import psycopg
 
 from pipeline.news_health import VNSTOCK_NEWS_SOURCE, record_failure, record_ok
 from providers.vnstock_provider import (
-    CorporateEvent,
     ForeignFlowRecord,
     FundamentalRecord,
     PriceBar,
@@ -113,23 +112,6 @@ def upsert_fundamentals(conn: psycopg.Connection, records: list[FundamentalRecor
             ],
         )
     return len(records)
-
-
-def upsert_corporate_events(conn: psycopg.Connection, events: list[CorporateEvent]) -> int:
-    if not events:
-        return 0
-    with conn.cursor() as cur:
-        cur.executemany(
-            """
-            INSERT INTO corporate_events (ticker, event_type, event_date, payload, source_url, fetched_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            [
-                (e.ticker, e.event_type, e.event_date, json.dumps(e.payload, default=str), e.source_url, e.fetched_at)
-                for e in events
-            ],
-        )
-    return len(events)
 
 
 def ingest_ticker_day(

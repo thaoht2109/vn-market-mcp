@@ -128,16 +128,6 @@ class ForeignFlowRecord:
 
 
 @dataclass
-class CorporateEvent:
-    ticker: str
-    event_type: str
-    event_date: date
-    payload: dict[str, Any]
-    source_url: str | None
-    fetched_at: datetime
-
-
-@dataclass
 class NewsItem:
     ticker: str
     published_at: datetime
@@ -154,7 +144,7 @@ class VNStockProvider:
     and removed in vnstock>=4). Each vnstock.api class is instantiated
     per-call with source+symbol, so there is no single shared client to
     inject — tests inject a fake per-domain client via the `clients` dict
-    instead (see get_ohlcv/get_fundamentals/get_corporate_events)."""
+    instead (see get_ohlcv/get_fundamentals/get_news)."""
 
     def __init__(self, source: str = "VCI", clients: dict[str, Any] | None = None, scale_map: dict[str, float] | None = None):
         self.source = source
@@ -217,7 +207,8 @@ class VNStockProvider:
         """ICB sector name from the company overview (the same field the VN30 seed stores), or None."""
         self._throttle()
         overview = self._company(ticker).overview()
-        return (str(overview.iloc[0].get("sector") or "").strip() or None) if len(overview) else None
+        sector = overview.iloc[0].get("sector") if len(overview) else None
+        return None if pd.isna(sector) else (str(sector).strip() or None)
 
     def get_market_index(self, symbol: str, start: date, end: date) -> pd.DataFrame:
         """OHLCV for a market index (e.g. VNINDEX), for pipeline.regime.
@@ -344,30 +335,6 @@ class VNStockProvider:
                 )
             ]
         return out
-
-    def get_corporate_events(self, ticker: str, start: date, end: date) -> list[CorporateEvent]:
-        fetched_at = datetime.now(timezone.utc)
-        self._throttle()
-        raw = self._company(ticker).events()  # no start/end param in vnstock.api; filter after fetch
-        events = []
-        for row in raw.to_dict("records"):
-            event_date = row.get("public_date") or row.get("display_date1")
-            if event_date is None:
-                continue
-            parsed_date = _to_date(event_date)
-            if not (start <= parsed_date <= end):
-                continue
-            events.append(
-                CorporateEvent(
-                    ticker=ticker,
-                    event_type=str(row.get("event_code") or row.get("category") or "unknown"),
-                    event_date=parsed_date,
-                    payload=row,
-                    source_url=None,  # not exposed by vnstock.api.company.Company.events()
-                    fetched_at=fetched_at,
-                )
-            )
-        return events
 
     def get_news(self, ticker: str, start: date, end: date) -> list[NewsItem]:
         """vnstock.api.company.Company.news() — title/date are populated;

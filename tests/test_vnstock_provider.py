@@ -41,12 +41,8 @@ class _FakeFinance:
 
 
 class _FakeCompany:
-    def __init__(self, events_df=None, news_df=None):
-        self._events_df = events_df
+    def __init__(self, news_df=None):
         self._news_df = news_df
-
-    def events(self):
-        return self._events_df
 
     def news(self):
         return self._news_df
@@ -185,32 +181,6 @@ def test_get_fundamentals_returns_newest_quarters_not_oldest():
 
     assert [r.period for r in records] == ["2025-Q3", "2025-Q4", "2026-Q1", "2026-Q2"]
     assert records[-1].metrics == {"pb": float(periods.index("2026-Q2"))}
-
-
-def test_get_corporate_events_filters_by_date_range():
-    df = pd.DataFrame(
-        [
-            {"event_code": "DIV", "public_date": "2026-05-01", "category": "DIVIDEND"},
-            {"event_code": "ISS", "public_date": "2026-09-15", "category": "OTHER"},
-        ]
-    )
-    provider = VNStockProvider(source="VCI", clients={"company": _FakeCompany(events_df=df)})
-
-    events = provider.get_corporate_events("FPT", date(2026, 9, 1), date(2026, 9, 30))
-
-    assert len(events) == 1
-    assert events[0].event_type == "ISS"
-    assert events[0].event_date == date(2026, 9, 15)
-    assert events[0].source_url is None
-
-
-def test_get_corporate_events_skips_rows_without_date():
-    df = pd.DataFrame([{"event_code": "DIV", "public_date": None, "display_date1": None, "category": "DIVIDEND"}])
-    provider = VNStockProvider(source="VCI", clients={"company": _FakeCompany(events_df=df)})
-
-    events = provider.get_corporate_events("FPT", date(2026, 1, 1), date(2026, 12, 31))
-
-    assert events == []
 
 
 def test_get_foreign_flow_reads_kbs_price_board_snapshot():
