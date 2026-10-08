@@ -130,7 +130,7 @@ def get_stock_report(ticker: str, run_id: str) -> dict[str, Any]:
 
     Nếu data.needs_commentary=False: báo cáo là nguyên văn data.final.
     Nếu True: viết đoạn nhận định ngắn, gọi save_commentary; báo cáo là data.report + nhận định.
-    Trước khi trả lời người dùng, làm theo data.next_step (góc nhìn cố vấn).
+    Trước khi trả lời người dùng: góc nhìn cố vấn (get_advisor_input), theo SKILL bước 2b.
     """
     return get_stock_report_tool(ticker, run_id)
 

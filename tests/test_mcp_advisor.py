@@ -4,7 +4,6 @@ import pandas as pd
 
 from db.connection import get_conn
 from mcp_server.tools.advisor import get_advisor_input_tool, playbook, save_advice_tool
-from mcp_server.tools.stock_report import get_stock_report_tool
 from ops.backtest_score import forward_excess, known_quarters, quarter_end
 from tests.test_mcp_stock_report import GOOD, RUN, TICKER, seeded  # noqa: F401  (fixture)
 
@@ -22,7 +21,6 @@ def test_advisor_sees_no_label_and_its_first_view_is_kept_next_to_the_label(seed
         data = get_advisor_input_tool(TICKER, RUN)["data"]
         assert data["status"] == "ok" and data["stances"] == ["buy_accumulate", "watch", "stay_out"]
         assert "cố vấn tài chính" in data["advisor_task"]["goal"] and data["advisor_task"]["output_schema"]["required"]
-        assert "get_advisor_input" in get_stock_report_tool(TICKER, RUN)["data"]["next_step"]
         assert "Kết luận" not in data["input"] and "theo dõi, chưa giải ngân" not in data["input"]
         assert "**1. Kỹ thuật**" in data["input"] and "Chưa nắm giữ mã này." in data["input"]
         assert "**Nguyên tắc của cố vấn**" in data["input"] and "Ngành chưa có khung riêng" in data["input"]  # no group

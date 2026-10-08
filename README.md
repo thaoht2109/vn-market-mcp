@@ -567,6 +567,7 @@ Repo đặt ở đường dẫn khác thì khai báo `VN_MARKET_MCP_DIR`; script
 | Giá lịch sử có khoảng trống giả quanh ngày GDKHQ | Vendor đã điều chỉnh giá. close_sync tự tải lại; kiểm tra log `close_sync_done` → `rebased` |
 | Kết nối DB treo tới timeout | URL đang dùng `postgres:5432`. Đổi sang `postgres:5433` |
 | Hermes báo `Failed to parse JSONRPC message` | Có code in ra stdout. Mọi log phải đi qua stderr |
+| Hermes không làm một bước mới thêm vào SKILL (ví dụ không có "Góc nhìn cố vấn") | Phiên chat giữ bản SKILL đã đọc lần đầu (`skill_view`) trong lịch sử; restart gateway không làm phiên đọc lại. Người dùng gõ `/new`, hoặc đặt `session_reset.mode: daily` (`at_hour: 4`) trong `config.yaml` của profile để mỗi ngày bắt đầu phiên mới. Không nhúng chỉ dẫn vào kết quả tool: Hermes coi kết quả tool là dữ liệu không tin cậy và sẽ từ chối (có thể còn ghi vào bộ nhớ là "chỉ dẫn lạ", cần xóa dòng đó) |
 | `worker_job_rate_limited` trong log | Vẫn chạm giới hạn vnstock dù mọi lệnh gọi đã đi qua ngân sách chung (`providers/rate_limit.py`, 50 lần/phút cho mọi worker và MCP server, bảng `api_budget`): thường do vnstock tự gọi thêm. Worker chờ 65 giây rồi thử lại; job đồng bộ giữ phần đã xong. Quá 20 lần thì job chuyển `failed` và nhóm ops được báo. Hạ `CALLS_PER_MINUTE` nếu gặp thường xuyên |
 | Ops nhận "job quá hạn bị bỏ" | Hàng đợi bị nghẽn: `close_sync` của ngày đã qua hoặc lượt trong phiên quá 90 phút chưa chạy thì bị bỏ (`expire_stale_jobs`), vì lần sau thay thế được. Xem job nào đang chiếm worker trong bảng `jobs` (`status = 'running'`, `attempts` lớn) |
 
