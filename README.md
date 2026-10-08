@@ -119,7 +119,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `pipeline/price_alerts.py` | Cảnh báo giá theo mốc của nhận định chính thức (xem "Cảnh báo giá") |
 | `mcp_server/` | MCP server và 21 tool; `identity.py` xác định người gọi (`VNMCP_USER_ID`) |
 | `ops/` | worker, scheduler, grading, retention, alerting, backfill/seed, `backup.sh` (DB) / `backup_hermes.sh` (toàn bộ `~/.hermes`), `add_user.sh` / `remove_user.sh` (thêm / xóa người dùng), `pending_alerts.py` + `setup_alerts_cron.sh` (gửi cảnh báo giá qua cron Hermes) |
-| `db/` | Migrations (`001`–`024`), tạo role, tạo DB test |
+| `db/` | Migrations (`001`–`025`), tạo role, tạo DB test. Thiết kế bảng: [`docs/database.md`](docs/database.md) |
 | `llm/`, `schemas/` | Các vai trò LLM trong pipeline (đang **tắt**, giữ lại để bật sau) |
 | `evals/` | Bộ so sánh mô hình phân loại tin (chạy tay) |
 | `docs/` | `design/` (thiết kế tổng thể), `superpowers/plans`, `superpowers/specs` (kế hoạch và spec từng giai đoạn), `archive/` (ghi chú cũ). Không đưa vào image |
