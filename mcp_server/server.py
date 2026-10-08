@@ -10,6 +10,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_server.tools.advisor import get_advisor_input_tool, save_advice_tool
 from mcp_server.tools.alerts import set_price_alerts_tool
 from mcp_server.tools.digests import get_market_digest_input_tool, get_weekly_digest_input_tool
 from mcp_server.tools.explain import explain_run_tool
@@ -153,6 +154,26 @@ def judge_news(ticker: str, judgments: list[dict[str, Any]]) -> dict[str, Any]:
     Đánh giá đã có thì giữ nguyên, không ghi đè. Chỉ đổi điểm tham khảo trong báo cáo, không đổi nhãn chính thức.
     """
     return judge_news_tool(ticker, judgments)
+
+
+@mcp.tool()
+def get_advisor_input(ticker: str, run_id: str) -> dict[str, Any]:
+    """Dữ liệu cho góc nhìn cố vấn độc lập: báo cáo của run_id đã bỏ phần kết luận/nhãn/điểm, kèm vị thế của người hỏi.
+
+    status="advised": đã có góc nhìn cho lần chạy này, gửi nguyên văn data.final. status="ok": giao data.input
+    và data.stances cho sub-agent cố vấn (không kèm nhãn hay kết luận), rồi lưu kết quả bằng save_advice.
+    """
+    return get_advisor_input_tool(ticker, run_id)
+
+
+@mcp.tool()
+def save_advice(ticker: str, run_id: str, stance: str, advice: str) -> dict[str, Any]:
+    """Kiểm tra rồi lưu góc nhìn cố vấn (stance phải thuộc data.stances của get_advisor_input).
+
+    status='saved' → gửi nguyên văn data.final. status='rejected' → KHÔNG gửi; sửa đúng data.issues rồi gọi lại
+    (số liệu phải có trong dữ liệu cố vấn, không từ ngữ nội bộ, 80–220 từ). Góc nhìn đầu tiên được giữ.
+    """
+    return save_advice_tool(ticker, run_id, stance, advice)
 
 
 @mcp.tool()
