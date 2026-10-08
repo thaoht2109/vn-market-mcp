@@ -9,6 +9,7 @@ from pipeline.coverage import (
     classify_universe_tier,
     coverage_check,
     gather_coverage_inputs,
+    fill_missing_industry,
     resolve_or_register_ticker,
     resolve_ticker,
 )
@@ -46,12 +47,27 @@ class _Listing:
     def lookup_listing(self, ticker):
         return ("Tổng CTCP DIGTEST", "HOSE") if ticker == "DIGTEST" else None
 
+    def lookup_sector(self, ticker):
+        return "Real Estate"
+
 
 def test_resolve_or_register_ticker_registers_a_listed_non_vn30_ticker(db_conn):
     match = resolve_or_register_ticker(db_conn, _Listing(), " digtest ")
     assert (match.ticker, match.exchange) == ("DIGTEST", "HOSE")
     assert resolve_ticker(db_conn, "DIGTEST").name == "Tổng CTCP DIGTEST"
     assert classify_universe_tier(db_conn, "DIGTEST") == "B"
+    assert db_conn.execute("SELECT industry_group FROM tickers WHERE ticker = 'DIGTEST'").fetchone()[0] == "Real Estate"
+
+
+def test_register_without_a_sector_still_works_and_backfill_fills_it_later(db_conn):
+    class NoSector(_Listing):
+        def lookup_sector(self, ticker):
+            raise RuntimeError("vnstock down")
+
+    resolve_or_register_ticker(db_conn, NoSector(), "digtest")
+    assert db_conn.execute("SELECT industry_group FROM tickers WHERE ticker = 'DIGTEST'").fetchone()[0] is None
+    assert fill_missing_industry(db_conn, _Listing())["DIGTEST"] == "Real Estate"
+    assert db_conn.execute("SELECT sector, industry_group FROM tickers WHERE ticker = 'DIGTEST'").fetchone() == ("Real Estate",) * 2
 
 
 def test_resolve_or_register_ticker_still_rejects_an_unlisted_ticker(db_conn):

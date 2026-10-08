@@ -213,6 +213,12 @@ class VNStockProvider:
         exchange = str(row["exchange"]).upper()
         return str(row.get("organ_short_name") or row.get("organ_name") or ticker), {"HSX": "HOSE"}.get(exchange, exchange)
 
+    def lookup_sector(self, ticker: str) -> str | None:
+        """ICB sector name from the company overview (the same field the VN30 seed stores), or None."""
+        self._throttle()
+        overview = self._company(ticker).overview()
+        return (str(overview.iloc[0].get("sector") or "").strip() or None) if len(overview) else None
+
     def get_market_index(self, symbol: str, start: date, end: date) -> pd.DataFrame:
         """OHLCV for a market index (e.g. VNINDEX), for pipeline.regime.
 
