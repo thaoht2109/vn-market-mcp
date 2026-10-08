@@ -128,8 +128,9 @@ def set_price_alerts(enabled: bool, ticker: str | None = None) -> dict[str, Any]
 def get_stock_report(ticker: str, run_id: str) -> dict[str, Any]:
     """Báo cáo phân tích đầy đủ số liệu (kỹ thuật, cơ bản, khối ngoại, VN-Index, kế hoạch rủi ro) dựng bằng code từ run_id.
 
-    Nếu data.needs_commentary=False: gửi nguyên văn data.final cho người dùng.
-    Nếu True: viết đoạn nhận định ngắn, gọi save_commentary, rồi gửi data.report + nhận định.
+    Nếu data.needs_commentary=False: báo cáo là nguyên văn data.final.
+    Nếu True: viết đoạn nhận định ngắn, gọi save_commentary; báo cáo là data.report + nhận định.
+    Trước khi trả lời người dùng, làm theo data.next_step (góc nhìn cố vấn).
     """
     return get_stock_report_tool(ticker, run_id)
 
