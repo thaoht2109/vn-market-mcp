@@ -26,9 +26,6 @@ from pipeline.stock_report import COMMENTARY_TITLE, DISCLAIMER, render_stock_rep
 # Bump when the report layout / commentary instructions change, so old commentary is never replayed.
 REPORT_TEMPLATE_VERSION = "v7"
 REASON_MAX = 160
-# Told on every report, not only in SKILL.md: a long chat session keeps the skill text it loaded days ago.
-NEXT_STEP = ("Trước khi trả lời người dùng: gọi get_advisor_input(ticker, run_id) cho góc nhìn cố vấn và làm theo "
-             "data.advisor_task (bỏ qua khi đang so sánh nhiều mã).")
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 _RULES = Path(__file__).resolve().parents[2] / "config" / "vn-rules.yaml"
 # Deterministic inputs of the report; excludes as_of / run ids / LLM text (synthesis, debate, news).
@@ -174,7 +171,7 @@ def get_stock_report_tool(ticker: str, run_id: str) -> dict:
         ).fetchone()
     cached = row[2] if row and row[0] == REPORT_TEMPLATE_VERSION and row[1] == fp else None
     data = {"status": "ok", "report": report, "commentary": cached, "needs_commentary": cached is None,
-            "news_to_judge": to_judge, "next_step": NEXT_STEP}
+            "news_to_judge": to_judge}
     if cached:
         data["final"] = f"{report}\n\n{COMMENTARY_TITLE}\n{cached}\n\n{DISCLAIMER}"
     return build_envelope(data, sources=["postgres", "snapshot_file"], as_of=run_as_of)
@@ -201,7 +198,7 @@ def save_commentary_tool(ticker: str, run_id: str, commentary: str) -> dict:
             """,
             (ticker, REPORT_TEMPLATE_VERSION, loaded[1], run_id, commentary.strip()),
         )
-    return build_envelope({"status": "saved", "next_step": NEXT_STEP}, sources=["postgres"], as_of=now)
+    return build_envelope({"status": "saved"}, sources=["postgres"], as_of=now)
 
 
 def judge_news_tool(ticker: str, judgments: list[dict]) -> dict:
