@@ -3,7 +3,7 @@ from datetime import date
 import pandas as pd
 
 from db.connection import get_conn
-from mcp_server.tools.advisor import get_advisor_input_tool, playbook, save_advice_tool
+from mcp_server.tools.advisor import _market_only, get_advisor_input_tool, playbook, save_advice_tool
 from ops.backtest_score import forward_excess, known_quarters, quarter_end
 from tests.test_mcp_stock_report import GOOD, RUN, TICKER, seeded  # noqa: F401  (fixture)
 
@@ -67,3 +67,13 @@ def test_backtest_uses_only_published_quarters_and_excess_over_equal_weight_memb
     x = forward_excess(prices, ["A", "B"], days, 0, 2, ["A", "B"])
     assert round(x["A"], 6) == 0.1 and round(x["B"], 6) == -0.1  # A +20%, B 0%, bench +10%
     assert forward_excess(prices, ["A", "B"], days, 1, 2, ["A"]) == {}  # horizon past the data
+
+
+def test_advisor_gets_market_indicators_but_no_macro_or_news():
+    section = ("**4. Thị trường chung, vĩ mô & tin tức**\n- VN-Index 1.650,20 (+0,5%); xu hướng tăng.\n"
+               "- Vĩ mô 55,0/100 (trung tính): CPI so với cùng kỳ 3,10% (tháng 09/2026), 63% mã VN30 trên MA50.\n"
+               "- Tin 07/10: Lãi suất giảm (cafef) → trợ lý đánh giá tốt\n\n**5. Kế hoạch rủi ro**")
+    out = "\n".join(l for l in map(_market_only, section.split("\n")) if l is not None)
+    assert out == ("**4. Thị trường chung**\n- VN-Index 1.650,20 (+0,5%); xu hướng tăng.\n"
+                   "- Độ rộng thị trường: 63% mã VN30 trên MA50.\n\n**5. Kế hoạch rủi ro**")
+    assert _market_only("- Vĩ mô 50,0/100 (trung tính): CPI so với cùng kỳ 3,10% (tháng 09/2026).") is None
