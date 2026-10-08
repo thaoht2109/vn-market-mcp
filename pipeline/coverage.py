@@ -47,11 +47,31 @@ def resolve_or_register_ticker(conn: psycopg.Connection, provider, raw_input: st
         if listed is None:
             raise
     name, exchange = listed
+    sector = _sector(provider, ticker)
     conn.execute(
-        "INSERT INTO tickers (ticker, name, exchange) VALUES (%s, %s, %s) ON CONFLICT (ticker) DO NOTHING",
-        (ticker, name, exchange),
+        "INSERT INTO tickers (ticker, name, exchange, sector, industry_group) VALUES (%s, %s, %s, %s, %s)"
+        " ON CONFLICT (ticker) DO NOTHING",
+        (ticker, name, exchange, sector, sector),
     )
     return TickerMatch(ticker=ticker, name=name, exchange=exchange)
+
+
+def _sector(provider, ticker: str) -> str | None:
+    """The industry is optional: a lookup failure leaves it NULL (analysed as "other") rather than blocking."""
+    try:
+        return provider.lookup_sector(ticker)
+    except Exception:
+        return None
+
+
+def fill_missing_industry(conn: psycopg.Connection, provider) -> dict[str, str | None]:
+    """Backfill tickers registered before the sector lookup existed; returns ticker -> sector found."""
+    found = {}
+    for (ticker,) in conn.execute("SELECT ticker FROM tickers WHERE industry_group IS NULL ORDER BY ticker").fetchall():
+        found[ticker] = sector = _sector(provider, ticker)
+        if sector:
+            conn.execute("UPDATE tickers SET sector = %s, industry_group = %s WHERE ticker = %s", (sector, sector, ticker))
+    return found
 
 
 def classify_universe_tier(conn: psycopg.Connection, ticker: str) -> Literal["A", "B"]:
