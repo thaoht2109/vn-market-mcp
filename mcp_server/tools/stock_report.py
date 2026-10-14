@@ -19,7 +19,6 @@ from mcp_server.connection import get_ro_conn, get_rw_conn
 from mcp_server.envelope import build_envelope
 from mcp_server.identity import pinned_user
 from mcp_server.tools.snapshot import get_snapshot_tool
-from pipeline.calendar import NoCalendarDataError, is_trading_hours
 from pipeline.scoring import composite_score, news_score
 from pipeline.stock_report import COMMENTARY_TITLE, DISCLAIMER, render_stock_report
 
@@ -37,8 +36,8 @@ def fingerprint(snapshot: dict, closes: list, flow: list, news: list = ()) -> st
     core = {k: snapshot.get(k) for k in _SNAPSHOT_KEYS}
     if core["market"]:
         core["market"] = {k: v for k, v in core["market"].items() if k != "as_of"}
-    core["px"] = [[float(c), float(v or 0)] for c, v in closes]
-    core["flow"] = [[str(d), round(float(n or 0))] for d, _b, _s, n in flow]
+    core["px"] = [[float(c), float(v or 0)] for c, v, *_ in closes]
+    core["flow"] = [[str(d), round(float(n or 0))] for d, _b, _s, n, *_ in flow]
     core["news"] = [[str(d), t, sentiment] for d, t, _src, _id, sentiment, _reason in news]
     return hashlib.sha256(json.dumps(core, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -80,9 +79,12 @@ def _load(ticker: str, run_id: str):
     with get_ro_conn() as conn:
         name = (conn.execute("SELECT name FROM tickers WHERE ticker = %s", (ticker,)).fetchone() or [None])[0]
         style = (conn.execute("SELECT style FROM runs WHERE run_id = %s", (run_id,)).fetchone() or ["long"])[0]
+        # 3rd column: the bar was fetched before its own 15:00, i.e. a live mid-session snapshot (lunch break
+        # included), the same cut pipeline.ingest uses to tell final bars from provisional ones.
         px = conn.execute(
-            "SELECT close, volume FROM prices_daily WHERE ticker = %s AND trade_date <= %s::date"
-            " ORDER BY trade_date DESC LIMIT 2", (ticker, run_as_of.astimezone().date()),
+            "SELECT close, volume, fetched_at < (trade_date + time '15:00') AT TIME ZONE 'Asia/Ho_Chi_Minh'"
+            " FROM prices_daily WHERE ticker = %s AND trade_date <= %s::date"
+            " ORDER BY trade_date DESC LIMIT 2", (ticker, run_as_of.astimezone(_VN_TZ).date()),
         ).fetchall()
         if not px:
             return None, "no_prices"
@@ -91,17 +93,15 @@ def _load(ticker: str, run_id: str):
             " WHERE ticker = %s AND period ~ '^[0-9]{4}-?Q[1-4]$' ORDER BY period DESC, version DESC LIMIT 8",
             (ticker,),
         ).fetchall()
+        # A net beyond the session's matched-order value (put-through block or bad row) is shown flagged and
+        # kept out of the total, the same rows run_analysis leaves out of the flow score.
         flow = conn.execute(
-            "SELECT f.trade_date, f.buy_value, f.sell_value, f.net_value FROM foreign_flow_daily f"
-            " JOIN prices_daily p USING (ticker, trade_date)"
-            " WHERE f.ticker = %s AND abs(f.net_value) <= p.close * p.volume"  # drop implausible rows
-            " ORDER BY f.trade_date DESC LIMIT 5", (ticker,),
+            "SELECT f.trade_date, f.buy_value, f.sell_value, f.net_value, abs(f.net_value) <= p.close * p.volume"
+            " FROM foreign_flow_daily f JOIN prices_daily p USING (ticker, trade_date)"
+            " WHERE f.ticker = %s ORDER BY f.trade_date DESC LIMIT 5", (ticker,),
         ).fetchall()
         news = _news_rows(conn, ticker)
-        try:
-            in_session = is_trading_hours(conn, run_as_of, rules["trading_hours"])
-        except NoCalendarDataError:
-            in_session = False
+    in_session = bool(px[0][2])
     report = render_stock_report(
         snapshot, ticker=ticker, name=name, as_of=run_as_of, close=float(px[0][0]),
         prev_close=float(px[1][0]) if len(px) > 1 else None, volume=float(px[0][1]),

@@ -48,6 +48,20 @@ def test_macro_context_returns_kept_headlines_by_pillar_and_source_freshness(see
     assert not any("NHNN" in w for w in out["warnings"])
 
 
+def test_indicators_carry_precomputed_changes(seeded):
+    with get_conn() as conn:
+        for day, v in ((date.today(), 4.75), (date.today() - timedelta(days=3), 3.0), (date.today() - timedelta(days=10), 2.5)):
+            conn.execute("INSERT INTO macro_indicators VALUES"
+                         " ('interbank_overnight', %s, %s, '%%/năm', 'test_sbv', 'http://t', now())", (day, v))
+    ind = macro.get_macro_context_tool(days=7)["data"]["indicators"]
+    fx = ind["usd_vnd_central"]
+    assert fx["vs_prev"]["abs"] == 43 and fx["vs_prev"]["pct"] == round(43 / 25600 * 100, 2)
+    assert fx["vs_oldest"] == fx["vs_prev"]  # two points: newest vs previous is also newest vs oldest
+    rate = ind["interbank_overnight"]
+    assert rate["vs_prev"]["abs"] == 1.75 and rate["vs_oldest"]["abs"] == 2.25
+    assert "pct" not in rate["vs_prev"]  # rates: points only
+
+
 def test_days_is_clamped(seeded):
     assert macro.get_macro_context_tool(days=0)["data"]["pillars"]["tien_te"]
     assert macro.get_macro_context_tool(days=9999)["data"]["pillars"]["tien_te"]

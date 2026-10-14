@@ -9,12 +9,16 @@ smoothed version, so values match what run_analysis would report for the same ti
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from mcp_server.connection import get_ro_conn
 from mcp_server.envelope import build_envelope
+
+_VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+_SETTLED_AFTER = time(15, 0)  # same cut as pipeline.ingest: a bar fetched before its own 15:00 is mid-session
 
 _VN30 = (
     "SELECT ticker FROM index_membership WHERE index_code = 'VN30'"
@@ -24,19 +28,19 @@ _VN30 = (
 # Needs 50 bars for ma50 to be non-null; matches pipeline.indicators.MIN_BARS.
 _METRICS_SQL = """
 WITH bars AS (
-  SELECT ticker, trade_date, open, high, low, close, volume,
+  SELECT ticker, trade_date, open, high, low, close, volume, fetched_at,
          row_number() OVER (PARTITION BY ticker ORDER BY trade_date DESC) rn
   FROM prices_daily
   WHERE {universe}
 ),
 gainloss AS (
-  SELECT ticker, trade_date, rn, open, high, low, close, volume,
+  SELECT ticker, trade_date, rn, open, high, low, close, volume, fetched_at,
          GREATEST(close - LAG(close) OVER (PARTITION BY ticker ORDER BY trade_date), 0) AS gain,
          GREATEST(LAG(close) OVER (PARTITION BY ticker ORDER BY trade_date) - close, 0) AS loss
   FROM bars WHERE rn <= 50
 ),
 rolled AS (
-  SELECT ticker, trade_date, rn, open, high, low, close, volume,
+  SELECT ticker, trade_date, rn, open, high, low, close, volume, fetched_at,
          AVG(close) OVER (PARTITION BY ticker ORDER BY trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS ma20,
          AVG(close) OVER (PARTITION BY ticker ORDER BY trade_date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW) AS ma50_raw,
          COUNT(*) OVER (PARTITION BY ticker) AS bar_count,
@@ -51,7 +55,8 @@ SELECT ticker, trade_date, open, high, low, close, volume,
        ma20,
        CASE WHEN bar_count >= 50 THEN ma50_raw END AS ma50,
        volume_avg20,
-       CASE WHEN avg_loss = 0 THEN 100
+       CASE WHEN avg_loss = 0 AND avg_gain = 0 THEN 50
+            WHEN avg_loss = 0 THEN 100
             ELSE 100 - 100 / (1 + avg_gain / NULLIF(avg_loss, 0)) END AS rsi14,
        CASE
          WHEN prev_close < prev_open AND close > open AND close >= prev_open AND open <= prev_close
@@ -64,7 +69,8 @@ SELECT ticker, trade_date, open, high, low, close, volume,
          WHEN (high - low) > 0 AND ABS(close - open) / (high - low) >= 0.9 AND close > open
            THEN 'bullish_marubozu'
          ELSE NULL
-       END AS candle_pattern
+       END AS candle_pattern,
+       fetched_at
 FROM rolled
 WHERE rn = 1
 """
@@ -98,13 +104,17 @@ def screen_tickers_tool(
     with get_ro_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
     cols = ("ticker", "trade_date", "open", "high", "low", "close", "volume",
-            "ma20", "ma50", "volume_avg20", "rsi14", "candle_pattern")
+            "ma20", "ma50", "volume_avg20", "rsi14", "candle_pattern", "fetched_at")
     all_rows = [
         {k: (str(v) if k == "trade_date" else float(v) if isinstance(v, (int, float, Decimal)) else v)
          for k, v in zip(cols, row)}
         for row in rows
     ]
     for r in all_rows:
+        # close_sync overwrites mid-session bars with the settled OHLCV after the close; a bar fetched before
+        # 15:00 still has partial volume and a not-yet-final high/low/close, so its pattern and ratios can flip.
+        settled_at = datetime.combine(date.fromisoformat(r["trade_date"]), _SETTLED_AFTER, tzinfo=_VN_TZ)
+        r["provisional"] = r.pop("fetched_at") < settled_at
         r["volume_ratio"] = round(r["volume"] / r["volume_avg20"], 2) if r["volume_avg20"] else None
         r["pct_vs_ma20"] = round((r["close"] / r["ma20"] - 1) * 100, 2) if r["ma20"] else None
         r["pct_vs_ma50"] = round((r["close"] / r["ma50"] - 1) * 100, 2) if r["ma50"] else None
@@ -133,4 +143,11 @@ def screen_tickers_tool(
 
     matches = [r for r in all_rows if keep(r)]
     data = {"scanned": len(all_rows), "matches": matches}
-    return build_envelope(data, sources=["postgres"], as_of=now)
+    warnings = []
+    provisional = sorted(r["ticker"] for r in all_rows if r["provisional"])
+    if provisional:
+        warnings.append(
+            f"Dữ liệu phiên {all_rows[0]['trade_date']} của {len(provisional)}/{len(all_rows)} mã chưa chốt sau đóng cửa "
+            "(khối lượng, nến và các tỷ lệ có thể còn đổi, đủ số liệu chốt sau 15:20): nói rõ với người dùng, "
+            "không coi mẫu nến hay khối lượng là kết luận")
+    return build_envelope(data, sources=["postgres"], as_of=now, warnings=warnings)

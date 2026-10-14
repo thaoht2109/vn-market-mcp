@@ -106,3 +106,24 @@ def test_screen_empty_universe_returns_no_matches():
 def test_screen_treats_ticker_text_as_data_not_sql():
     result = screen_tickers_tool(["X') OR TRUE OR ticker IN ('"])
     assert result["data"]["matches"] == []
+
+
+def test_screen_flags_bars_fetched_before_close_sync_as_provisional():
+    pairs = (("PROVA", "2026-03-02 14:00:00+07"), ("PROVB", "2026-03-02 15:30:00+07"))
+    with get_conn() as conn:
+        for t, fetched in pairs:
+            conn.execute("INSERT INTO tickers (ticker, exchange) VALUES (%s, 'HOSE') ON CONFLICT DO NOTHING", (t,))
+            for day in ("2026-03-01", "2026-03-02"):
+                conn.execute(
+                    "INSERT INTO prices_daily (ticker, trade_date, open, high, low, close, volume, source, fetched_at)"
+                    " VALUES (%s, %s, 10, 11, 9, 10.5, 1000, 'test', %s) ON CONFLICT (ticker, trade_date) DO UPDATE"
+                    " SET fetched_at = EXCLUDED.fetched_at", (t, day, fetched))
+    try:
+        out = screen_tickers_tool(["PROVA", "PROVB"])
+        flags = {m["ticker"]: m["provisional"] for m in out["data"]["matches"]}
+        assert flags == {"PROVA": True, "PROVB": False}
+        assert len(out["warnings"]) == 1 and "1/2 mã chưa chốt" in out["warnings"][0]
+        assert screen_tickers_tool(["PROVB"])["warnings"] == []
+    finally:
+        with get_conn() as conn:
+            conn.execute("DELETE FROM prices_daily WHERE ticker IN ('PROVA', 'PROVB')")

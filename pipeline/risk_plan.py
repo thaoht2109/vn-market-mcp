@@ -60,8 +60,8 @@ def risk_plan(
     stop_pct = stop_distance / entry_ref_price
     if stop_pct > band_pct:
         warnings.append(
-            f"stop-loss cách {stop_pct:.1%} vượt biên độ {exchange} ({band_pct:.0%}); "
-            "có thể kẹt sàn không thoát được trong 1 phiên"
+            f"Cắt lỗ cách {stop_pct * 100:.1f}% vượt biên độ {exchange} ({band_pct * 100:.0f}%)".replace(".", ",")
+            + ": có thể kẹt sàn, không thoát được trong một phiên, nên kế hoạch rủi ro này không dùng được."
         )
 
     raw_volume = (avg_liquidity_value_20d * cfg.max_pct_of_avg_liquidity) / entry_ref_price

@@ -34,12 +34,13 @@ def _rsi(close: pd.Series, period: int = 14) -> float:
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    rs = avg_gain / avg_loss.replace(0, float("nan"))
-    rsi = 100 - (100 / (1 + rs))
-    value = rsi.iloc[-1]
-    return float(value) if not pd.isna(value) else 50.0
+    avg_gain = float(gain.rolling(period).mean().iloc[-1])
+    avg_loss = float(loss.rolling(period).mean().iloc[-1])
+    if pd.isna(avg_gain) or pd.isna(avg_loss):
+        return 50.0
+    if avg_loss == 0:  # no down session in the window: fully overbought, not neutral (flat window stays 50)
+        return 100.0 if avg_gain > 0 else 50.0
+    return 100 - 100 / (1 + avg_gain / avg_loss)
 
 
 def _atr(df: pd.DataFrame, period: int = 14) -> float:
