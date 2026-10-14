@@ -12,8 +12,10 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_server.tools.advisor import get_advisor_input_tool, save_advice_tool
 from mcp_server.tools.alerts import set_price_alerts_tool
+from mcp_server.tools.screen import screen_tickers_tool
 from mcp_server.tools.digests import get_market_digest_input_tool, get_weekly_digest_input_tool
 from mcp_server.tools.explain import explain_run_tool
+from mcp_server.tools.export_bars import export_price_bars_tool
 from mcp_server.tools.history import query_history_tool
 from mcp_server.tools.macro import get_macro_context_tool
 from mcp_server.tools.positions import clear_position_tool, set_position_tool
@@ -41,6 +43,41 @@ def run_analysis(ticker: str, style: str = "long", depth: str = "quick") -> dict
 def get_job_status(job_id: str) -> dict[str, Any]:
     """Tra trạng thái một job đã xếp hàng bằng run_analysis (queued/running/done/failed)."""
     return get_job_status_tool(job_id)
+
+
+@mcp.tool()
+def screen_tickers(
+    tickers: list[str] | None = None,
+    candle_pattern: str | None = None,
+    rsi_below: float | None = None,
+    rsi_above: float | None = None,
+    above_ma20: bool | None = None,
+    above_ma50: bool | None = None,
+    min_volume_ratio: float | None = None,
+) -> dict[str, Any]:
+    """Quét nhiều mã cùng lúc theo điều kiện kỹ thuật, một lượt SQL (VN30 nếu bỏ trống tickers).
+
+    Dùng tool này thay vì gọi run_analysis lặp lại cho từng mã khi câu hỏi dạng
+    "tìm các mã có X" (mô hình nến bullish, RSI quá bán, trên MA50, khối lượng đột biến...).
+    candle_pattern: 'any' (mọi mẫu nến tăng, dùng cho câu hỏi "nến bullish" chung) | 'bullish_engulfing' | 'hammer' | 'bullish_marubozu'.
+    Mọi tham số lọc là AND với nhau; không truyền gì trả toàn bộ universe kèm chỉ số.
+    Mỗi mã kèm sẵn volume_ratio, pct_vs_ma20, pct_vs_ma50, range_pct, rsi14 — không tính lại bằng terminal.
+    """
+    return screen_tickers_tool(
+        tickers, candle_pattern=candle_pattern, rsi_below=rsi_below, rsi_above=rsi_above,
+        above_ma20=above_ma20, above_ma50=above_ma50, min_volume_ratio=min_volume_ratio)
+
+
+@mcp.tool()
+def export_price_bars(days: int = 250, tickers: list[str] | None = None) -> dict[str, Any]:
+    """Xuất giá ngày (OHLCV) của nhiều mã ra file CSV để lọc theo tiêu chí screen_tickers không hỗ trợ.
+
+    tickers bỏ trống = mọi mã có trong hệ thống; days = số phiên gần nhất mỗi mã (1-1000).
+    Chỉ trả đường dẫn file (data.path), không trả dữ liệu. Phân tích bằng MỘT lệnh terminal:
+    `<data.python> -c "import pandas as pd; df = pd.read_csv('<data.path>'); ..."` (pandas có sẵn),
+    và chỉ in ra các mã khớp — không in toàn bộ bảng.
+    """
+    return export_price_bars_tool(days, tickers)
 
 
 @mcp.tool()

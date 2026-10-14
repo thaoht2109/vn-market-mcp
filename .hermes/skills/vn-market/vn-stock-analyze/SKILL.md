@@ -1,6 +1,6 @@
 ---
 name: vn-stock-analyze
-description: "Use when the user asks about a Vietnamese stock, the VN market, or their own watchlist/positions (phân tích <mã>, <mã> hôm nay sao rồi, xem lại <mã>, so sánh, theo dõi <mã>, /danhsach, tôi đang giữ <mã>, thị trường hôm nay). Drives the vn-market-mcp tools; never computes numbers itself, never places orders."
+description: "Use when the user asks about a Vietnamese stock, the VN market, or their own watchlist/positions (phân tích <mã>, <mã> hôm nay sao rồi, xem lại <mã>, so sánh, theo dõi <mã>, /danhsach, tôi đang giữ <mã>, thị trường hôm nay, tìm/lọc/quét các mã có <tiêu chí>). Drives the vn-market-mcp tools; never computes numbers itself, never places orders."
 version: 1.0.0
 author: vn-trading-agent project
 license: MIT
@@ -73,6 +73,7 @@ Vị thế (`set_position`/`clear_position`) và danh sách theo dõi (`watch_ti
 | "<mã> N phiên gần nhất", "lịch sử khối ngoại <mã>", "giá <mã> tuần qua" | `query_history(ticker, series="prices"\|"fundamentals"\|"foreign_flow")` |
 | "vì sao cắt lỗ ở đó?", "giải thích lần chạy trước" | `explain_run(run_id)` với run_id từ ngữ cảnh; không có thì `get_snapshot(ticker)` để lấy run gần nhất. Không chạy lại để trả lời câu hỏi "vì sao" |
 | "so sánh <A> với <B>" | `run_analysis` cho từng mã (mỗi mã một lần gọi), trình bày cạnh nhau; bước 2b cho mọi mã |
+| "tìm/lọc/quét các mã có <tiêu chí>", "mã nào đang <tiêu chí>", "cổ phiếu có nến/RSI/MA… ", "top mã …" | mục "Quét nhiều mã" bên dưới — KHÔNG `run_analysis` từng mã |
 | "các dự báo còn mở", "dự báo <mã>" | `list_predictions(ticker, status)` (nhãn chung, không theo vị thế) |
 | `/trangthai`, "thống kê", "hit-rate" | `get_stats()` |
 | "thị trường hôm nay", "bản tin sáng", "VN-Index ra sao" | `get_market_digest_input()` |
@@ -86,6 +87,15 @@ Vị thế (`set_position`/`clear_position`) và danh sách theo dõi (`watch_ti
 | "tắt cảnh báo <mã>", "đừng báo <mã> nữa" / "tắt mọi cảnh báo", "bớt spam" / "bật lại cảnh báo [<mã>]" | `set_price_alerts(enabled=false, ticker=<mã>)` / `set_price_alerts(enabled=false)` / `set_price_alerts(enabled=true, ticker=<mã hoặc bỏ trống>)`; xác nhận ngắn một câu, không hỏi lại |
 
 Các cú pháp `/chay`, `/danhsach`… không phải lệnh đăng ký trong Hermes, chỉ là cụm từ để nhận diện; diễn đạt tự nhiên tương đương cũng được.
+
+## Quét nhiều mã
+
+Câu hỏi lọc trên nhiều mã luôn giải bằng một hoặc hai lệnh gọi tool, bất kể tiêu chí là gì:
+
+1. **Tiêu chí có sẵn** — mô hình nến bullish (bullish_engulfing, hammer, bullish_marubozu), RSI14 trên/dưới ngưỡng, giá trên/dưới MA20/MA50, khối lượng so với bình quân 20 phiên → gọi `screen_tickers` **một lần** với các tham số tương ứng (bỏ trống `tickers` = rổ VN30). Hỏi "nến bullish/nến tăng" chung chung → `candle_pattern="any"` (một lần gọi, không gọi riêng từng mẫu nến). Không có tham số nào khớp hẳn thì gọi không kèm bộ lọc để lấy toàn bộ chỉ số rồi tự chọn. Kết quả đã có sẵn `volume_ratio`, `pct_vs_ma20`, `pct_vs_ma50`, `range_pct`, `rsi14`: dùng thẳng, không chép số sang terminal để tính lại.
+2. **Mọi tiêu chí khác** (nến khác như doji/morning star, MACD, Bollinger, MA200, vượt đỉnh N phiên, tăng/giảm X% trong N phiên, xếp hạng tương đối, toàn bộ mã ngoài VN30…) → `export_price_bars(days, tickers)` **một lần** (bỏ trống `tickers` = mọi mã trong hệ thống; `days` vừa đủ cho tiêu chí, ví dụ 250 cho MA200), rồi **một** lệnh `terminal` chạy script pandas bằng `data.python` đọc `data.path`. Script tự tính và chỉ `print` các mã khớp (tối đa 20 dòng, chỉ các cột cần thiết, kèm `trade_date` của phiên cuối). Không bao giờ in toàn bộ file. Script lỗi → sửa và chạy lại, tối đa 2 lần.
+3. **Cấm khi quét**: không `run_analysis`, `get_snapshot`, `get_stock_report` hay `query_history` lần lượt từng mã để lọc; không `delegate_task` để chia danh sách mã cho sub-agent; không quét lại cùng tiêu chí trong cùng lượt.
+4. **Trình bày**: danh sách mã khớp kèm chỉ số làm nó khớp và thời điểm dữ liệu (phiên `trade_date` cuối). Nói rõ đây là kết quả lọc kỹ thuật thô, chưa phải nhận định của hệ thống. Con số tính từ script ghi "suy ra từ dữ liệu giá". Không khớp mã nào → nói vậy, không nới tiêu chí khi người dùng chưa đồng ý. Kết thúc bằng lời mời chọn tối đa 3 mã để phân tích đầy đủ (quy trình bên dưới) và dòng miễn trừ.
 
 ## Quy trình phân tích một mã
 
@@ -107,7 +117,7 @@ Các cú pháp `/chay`, `/danhsach`… không phải lệnh đăng ký trong Her
    - **Nhiều mã trong một câu trả lời**: gọi `get_advisor_input` cho từng mã, rồi gọi `delegate_task` MỘT lần với một task cho mỗi mã có `status="ok"` (mỗi task chỉ chứa `data.input` và `stances` của đúng mã đó, không trộn dữ liệu giữa các mã). Mỗi báo cáo trong câu trả lời đi kèm `data.final` của mã đó nếu `advised`, hoặc dòng "_Góc nhìn cố vấn đang được chuẩn bị, sẽ gửi ngay sau._". Khi kết quả về: `save_advice` cho từng mã, rồi gửi một tin gồm các `data.final` theo thứ tự yêu cầu, mỗi mã mở đầu bằng tên mã in đậm, cuối tin một dòng miễn trừ.
    - Trong nhóm chung vẫn làm như vậy (cố vấn xem như người hỏi chưa nắm giữ).
 3. **Dự phòng**: `get_snapshot(run_id)` + `explain_run(run_id)`, cộng tối đa hai `query_history` (khối ngoại 5 phiên; thêm một nếu người dùng hỏi thứ snapshot không có). `snapshot_file_missing` → dùng `explain_run` + `query_history`, không báo là không có phân tích. Trình bày tối đa khoảng 500 từ, theo khung: **<MÃ> — tên** · thời điểm dữ liệu; **Kết luận** (1–2 câu, kèm độ tin cậy và vì sao); **1. Kỹ thuật** (4–5 chỉ báo quyết định); **2. Cơ bản & định giá** (nêu rõ quý); **3. Dòng tiền khối ngoại** (bỏ qua lặng lẽ nếu không có hoặc vô lý); **4. Thị trường & tin tức** (từ khối `market` của snapshot; không có thì một câu "chưa có dữ liệu VN-Index trong lần chạy này", không suy ra trạng thái thị trường); **5. Kế hoạch rủi ro** (vùng mua, ngưỡng cắt lỗ −x%, mục tiêu +y%, tỷ lệ lãi/rủi ro); **6. Rủi ro & điều kiện sai** (tín hiệu trái chiều, cảnh báo dữ liệu, mốc giá làm sai nhận định). Mỗi nhận định kèm con số và ý nghĩa của nó trong ngoặc.
-4. **Ngân sách tool trong lượt phân tích**: không dùng terminal, chạy code, đọc/ghi file, không gọi quản lý skill, không `delegate_task` ngoài bước 2b. Mỗi lần gọi tool MCP là một lệnh riêng (không gộp hai tool trong một lệnh).
+4. **Ngân sách tool trong lượt phân tích**: không dùng terminal, chạy code, đọc/ghi file, không gọi quản lý skill, không `delegate_task` ngoài bước 2b. Ngoại lệ duy nhất cho terminal: bước 2 của mục "Quét nhiều mã". Mỗi lần gọi tool MCP là một lệnh riêng (không gộp hai tool trong một lệnh).
 
 ## Đọc kết quả (nội bộ — không nói tên trường với người dùng)
 
