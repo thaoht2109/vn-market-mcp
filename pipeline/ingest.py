@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import psycopg
 
+from pipeline.calendar import NoCalendarDataError, is_trading_day
 from pipeline.news_health import VNSTOCK_NEWS_SOURCE, record_failure, record_ok
 from providers.vnstock_provider import (
     ForeignFlowRecord,
@@ -133,6 +135,11 @@ def ingest_batch(conn: psycopg.Connection, provider, tickers: list[str], trade_d
     return [ingest_ticker_day(conn, provider, t, trade_date) for t in tickers]
 
 
+_VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+# CafeF rows fetched before this are treated as possibly not final: close_sync runs at 15:05 and the 18:00
+# retry re-pulls whatever it stored before 15:30, so a figure CafeF corrects after the close still lands.
+FLOW_SETTLED_AFTER = dtime(15, 30)
+
 RECENT_DAYS = 10
 # Tick-size rounding stays far below this; even a 1% cash dividend re-base exceeds it.
 ADJUSTMENT_TOLERANCE = 0.001
@@ -191,23 +198,37 @@ def sync_recent_prices(conn: psycopg.Connection, provider, today: date, commit_e
     SystemExit, the worker rolls back and requeues) then loses only the ticker in flight, instead of
     redoing all of them on every attempt and never finishing. Foreign flow for all pending tickers
     is one price-board request."""
+    history = getattr(provider, "get_foreign_flow_history", None)  # settled CafeF series; else the KBS board
+    # A ticker is done when its closing bar AND (with a settled-flow source) its settled flow are stored.
+    flow_done = (" AND ticker IN (SELECT ticker FROM foreign_flow_daily WHERE trade_date = %s AND source = 'CAFEF'"
+                 f"   AND fetched_at >= (trade_date + time '{FLOW_SETTLED_AFTER:%H:%M}') AT TIME ZONE 'Asia/Ho_Chi_Minh')"
+                 if history else "")
     tickers = [r[0] for r in conn.execute(
         "SELECT DISTINCT ticker FROM prices_daily WHERE trade_date >= %s"
         " AND ticker NOT IN (SELECT ticker FROM prices_daily WHERE trade_date = %s"
-        "   AND fetched_at >= (trade_date + time '15:00') AT TIME ZONE 'Asia/Ho_Chi_Minh')"
+        "   AND fetched_at >= (trade_date + time '15:00') AT TIME ZONE 'Asia/Ho_Chi_Minh'" + flow_done + ")"
         " ORDER BY ticker",
-        (today - timedelta(days=RECENT_DAYS), today),
+        (today - timedelta(days=RECENT_DAYS), today) + ((today,) if history else ()),
     ).fetchall()]
     if not tickers:
         return []
-    try:
-        board = provider.get_foreign_flow_board(tickers)
-        flows = {t: board.get(t, []) for t in tickers}
-    except Exception as exc:
-        flows = {t: exc for t in tickers}
+    flows: dict = {}
+    if not history:
+        try:
+            board = provider.get_foreign_flow_board(tickers)
+            flows = {t: board.get(t, []) for t in tickers}
+        except Exception as exc:
+            flows = {t: exc for t in tickers}
     outcomes = []
     for t in tickers:
-        outcomes.append(_sync_ticker(conn, provider, t, today, flows[t]))
+        if history:  # per ticker, inside the loop: a rate-limit exit mid-way keeps what is already committed
+            try:
+                flow = history(t, today - timedelta(days=RECENT_DAYS), today)
+            except Exception as exc:
+                flow = exc
+        else:
+            flow = flows[t]
+        outcomes.append(_sync_ticker(conn, provider, t, today, flow))
         if commit_each:
             conn.commit()
     return outcomes
@@ -221,6 +242,16 @@ def assert_batch_ok(outcomes: list[IngestOutcome]) -> None:
 
 
 FUNDAMENTALS_MAX_AGE = timedelta(hours=24)
+
+
+def market_is_open(conn: psycopg.Connection, now: datetime) -> bool:
+    """Continuous trading hours on a trading day (09:00-15:00 VN). Unknown calendar counts as closed:
+    the settled source is the safe default."""
+    now_vn = now.astimezone(_VN_TZ)
+    try:
+        return is_trading_day(conn, now_vn.date()) and dtime(9, 0) <= now_vn.time() < dtime(15, 0)
+    except NoCalendarDataError:
+        return False
 
 
 def ingest_fundamentals_and_flow(conn: psycopg.Connection, provider, ticker: str, quarters: int = 8) -> IngestOutcome:
@@ -248,7 +279,11 @@ def ingest_fundamentals_and_flow(conn: psycopg.Connection, provider, ticker: str
             errors.append(str(exc))
     try:
         end = date.today()
-        flow = provider.get_foreign_flow(ticker, end - timedelta(days=5), end)
+        history = getattr(provider, "get_foreign_flow_history", None)
+        if history is not None and not market_is_open(conn, datetime.now(timezone.utc)):
+            flow = history(ticker, end - timedelta(days=5), end)  # settled figures; the board is wrong out of hours
+        else:
+            flow = provider.get_foreign_flow(ticker, end - timedelta(days=5), end)  # live in-session snapshot
         upsert_foreign_flow(conn, flow)
     except Exception as exc:
         errors.append(str(exc))

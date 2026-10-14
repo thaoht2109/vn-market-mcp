@@ -64,7 +64,7 @@ Tài liệu thiết kế: [`docs/design/vn-trading-agent-plan_final.md`](docs/de
 ## 2. Kiến trúc
 
 ```
-                 vnstock (VCI: giá, BCTC · KBS: khối ngoại · tin tức)
+                 vnstock (VCI: giá, BCTC · KBS: khối ngoại trong phiên · tin tức) + CafeF (khối ngoại đã chốt)
                                      │
  scheduler ──enqueue──► jobs (Postgres) ◄──enqueue── MCP run_analysis
                                      │
@@ -577,7 +577,7 @@ Repo đặt ở đường dẫn khác thì khai báo `VN_MARKET_MCP_DIR`; script
 - `pipeline/theses.py` chưa được nối vào pipeline, nên `thesis_invalidated` luôn là `False`.
 - `retention_job` chưa có chính sách xóa nào, mới chỉ dựng sẵn hạ tầng.
 - Các vai trò LLM trong `llm/` (news digest, bull/bear, verifier, synthesis, macro) đang tắt và được giữ lại để đánh giá.
-- Dữ liệu khối ngoại của KBS chỉ có giá trị "hiện tại", không có lịch sử. Giá trị cuối ngày được chốt tại close_sync.
+- Khối ngoại: KBS chỉ có ảnh chụp "hiện tại" và sai khi chụp ngoài giờ (0/0 trước giờ mở cửa, khối lượng vượt cả phiên), nên chỉ dùng trong phiên 09:00-15:00. Sau đóng cửa, close_sync (15:05, thử lại 18:00) và run_analysis lấy số đã chốt từ CafeF (`providers/cafef.py`, khớp lệnh, không gồm thỏa thuận, endpoint không chính thức: đổi định dạng thì báo lỗi chứ không ghi rỗng). Nạp bù lịch sử: `python -m ops.backfill_foreign_flow` (mặc định chỉ so sánh, thêm `--apply` để ghi).
 - Kết quả phân tích theo lịch của mã trong danh sách theo dõi không được gửi chủ động cho người theo dõi; họ xem bằng `/danhsach`.
 - Danh mục riêng chỉ dùng được với bot riêng (chat riêng, hoặc nhóm riêng khai báo bằng `group_id`). Trong nhóm chung, mọi người chỉ phân tích mã, với nhãn chung.
 - Trong nhóm riêng, bot chỉ trả lời chủ của nó, nhưng mọi thành viên nhóm đều đọc được câu trả lời. Muốn kín thì dùng chat riêng.

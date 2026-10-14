@@ -32,7 +32,7 @@ def _vs(close: float, level: float, name: str, d: int = 0) -> str:
     return f"{'trên' if close >= level else 'dưới'} {name} {_n(level, d)} ({_pct((close / level - 1) * 100)})"
 
 
-def _technical(s: dict, close: float, prev: float | None, volume: float | None) -> list[str]:
+def _technical(s: dict, close: float, prev: float | None, volume: float | None, in_session: bool = False) -> list[str]:
     t = s["technical"]
     lines = []
     day = f" ({_pct((close / prev - 1) * 100, 2)} so với phiên trước {_n(prev)})" if prev else ""
@@ -60,7 +60,11 @@ def _technical(s: dict, close: float, prev: float | None, volume: float | None) 
     atr = t["atr14"]
     lines.append(f"Biên độ dao động bình quân ATR(14) {_n(atr)}đ/phiên (~{_n(atr / close * 100, 1)}% giá).")
 
-    if volume and t.get("volume_avg20"):
+    if volume and t.get("volume_avg20") and in_session:
+        # A partial day's volume against a full-day mean always reads "weak": state it, don't judge it.
+        lines.append(f"Khối lượng {_n(volume)} cp tính đến thời điểm dữ liệu (phiên chưa đóng cửa, chưa so được "
+                     f"với bình quân 20 phiên {_n(t['volume_avg20'])}).")
+    elif volume and t.get("volume_avg20"):
         r = volume / t["volume_avg20"] * 100
         vol = "thanh khoản yếu" if r < 70 else "dòng tiền tăng" if r > 130 else "thanh khoản bình thường"
         lines.append(f"Khối lượng {_n(volume)} cp = {_n(r)}% bình quân 20 phiên {_n(t['volume_avg20'])} ({vol}"
@@ -100,13 +104,23 @@ def _fundamental(s: dict, period: str | None, history: list[tuple[str, dict]]) -
 
 
 def _flow(rows: list[tuple]) -> list[str]:
-    """rows: (trade_date, buy_value, sell_value, net_value), newest first."""
+    """rows: (trade_date, buy_value, sell_value, net_value[, plausible]), newest first. A row whose net
+    exceeds that session's matched-order value (plausible=False) is shown but kept out of the total."""
     if not rows:
         return []
-    out = [f"{d:%d/%m}: mua {_n(float(b or 0) / 1e9, 1)} tỷ, bán {_n(float(sl or 0) / 1e9, 1)} tỷ, "
-           f"ròng {_n(float(n or 0) / 1e9, 1)} tỷ" for d, b, sl, n in rows]
-    net = sum(float(n or 0) for *_, n in rows)
-    out.append(f"Tổng {len(rows)} phiên: khối ngoại {'mua ròng' if net > 0 else 'bán ròng'} {_n(abs(net) / 1e9, 1)} tỷ đồng.")
+    out, kept = [], []
+    for d, b, sl, n, *flag in rows:
+        line = (f"{d:%d/%m}: mua {_n(float(b or 0) / 1e9, 1)} tỷ, bán {_n(float(sl or 0) / 1e9, 1)} tỷ, "
+                f"ròng {_n(float(n or 0) / 1e9, 1)} tỷ")
+        if flag and not flag[0]:
+            line += (" — vượt giá trị khớp lệnh cả phiên (có thể gồm giao dịch thỏa thuận hoặc lỗi dữ liệu), "
+                     "không tính vào tổng")
+        else:
+            kept.append(float(n or 0))
+        out.append(line)
+    if kept:
+        net = sum(kept)
+        out.append(f"Tổng {len(kept)} phiên: khối ngoại {'mua ròng' if net > 0 else 'bán ròng'} {_n(abs(net) / 1e9, 1)} tỷ đồng.")
     return out
 
 
@@ -172,7 +186,7 @@ def render_stock_report(snapshot: dict, *, ticker: str, name: str | None, as_of:
     t, plan, mk = s["technical"], s["risk_plan"], s.get("market") or {}
     when = as_of.astimezone(_VN_TZ).strftime("%H:%M %d/%m/%Y")
     out = [f"**{ticker}{' — ' + name if name else ''}** · dữ liệu chốt {when}"
-           + (" (giá tạm tính, phiên đang giao dịch)" if in_session else "")]
+           + (" (giá tạm tính, phiên chưa đóng cửa)" if in_session else "")]
 
     label = s.get("action_label")
     stance = _STANCE.get(label, "chưa đủ dữ liệu để kết luận")
@@ -205,7 +219,7 @@ def render_stock_report(snapshot: dict, *, ticker: str, name: str | None, as_of:
         if lines:
             out.append(f"**{title}**\n" + "\n".join("- " + l for l in lines))
 
-    block("1. Kỹ thuật", _technical(s, close, prev_close, volume))
+    block("1. Kỹ thuật", _technical(s, close, prev_close, volume, in_session))
     block("2. Cơ bản & định giá", _fundamental(s, fund_period, fund_history))
     block("3. Dòng tiền khối ngoại", _flow(flow_rows))
     block("4. Thị trường chung, vĩ mô & tin tức", _market(s, close, list(news_rows)))
@@ -224,18 +238,23 @@ def render_stock_report(snapshot: dict, *, ticker: str, name: str | None, as_of:
     block("5. Kế hoạch rủi ro", plan_lines)
 
     risks = []
-    roe = (s["fundamental"]["metrics"].get("roe") or 0) * 100
+    raw_roe = s["fundamental"]["metrics"].get("roe")
     weak = t["trend"] == "down" or close < t["ma50"] or t["macd"] < t["macd_signal"]
-    if roe >= 15 and weak:
-        risks.append(f"Trái chiều: cơ bản tốt (ROE {_n(roe, 1)}%) nhưng kỹ thuật yếu (MACD dưới tín hiệu hoặc giá dưới MA50).")
-    elif roe < 10 and not weak:
-        risks.append(f"Trái chiều: kỹ thuật tích cực nhưng nền tảng sinh lời thấp (ROE {_n(roe, 1)}%).")
+    if raw_roe is not None:  # no ROE on file: say nothing rather than print a made-up 0%
+        roe = raw_roe * 100
+        if roe >= 15 and weak:
+            risks.append(f"Trái chiều: cơ bản tốt (ROE {_n(roe, 1)}%) nhưng kỹ thuật yếu (MACD dưới tín hiệu hoặc giá dưới MA50).")
+        elif roe < 10 and not weak:
+            risks.append(f"Trái chiều: kỹ thuật tích cực nhưng nền tảng sinh lời thấp (ROE {_n(roe, 1)}%).")
     atr_pct = t["atr14"] / close * 100
-    if abs(stop_pct) < 2.5 * atr_pct:
-        risks.append(f"Cắt lỗ chỉ cách {_n(abs(stop_pct), 1)}% trong khi biên độ mỗi phiên ~{_n(atr_pct, 1)}% "
+    # The plan puts the stop 2×ATR below the run's close, so this only fires once price has since slid to
+    # within one average session's range of it.
+    if abs(stop_pct) < atr_pct:
+        risks.append(f"Cắt lỗ chỉ còn cách {_n(abs(stop_pct), 1)}% trong khi biên độ mỗi phiên ~{_n(atr_pct, 1)}% "
                      "→ dễ bị quét rồi giá quay lại.")
-    for w in list(s.get("warnings") or []) + list(plan.get("warnings") or []):
-        risks.append(str(w))
+    # the run copies plan warnings into its own list: print each once
+    for w in dict.fromkeys(str(w) for w in list(s.get("warnings") or []) + list(plan.get("warnings") or [])):
+        risks.append(w)
     risks.append(f"Vô hiệu khi đóng cửa dưới {_n(plan['stop_loss'])} (cắt lỗ) hoặc dưới hỗ trợ {_n(t['support'][0])}; "
                  f"xác nhận tăng khi vượt {_n(t['resistance'][0])} kèm khối lượng trên bình quân 20 phiên.")
     block("6. Rủi ro & điều kiện sai", risks)

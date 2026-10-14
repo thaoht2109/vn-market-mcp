@@ -49,3 +49,11 @@ def test_technical_snapshot_no_anomaly_on_steady_volume():
 def test_technical_snapshot_raises_on_insufficient_history():
     with pytest.raises(InsufficientHistoryError):
         technical_snapshot(_make_df(n=10))
+
+
+def test_rsi_without_a_down_session_is_100_and_a_flat_window_is_50():
+    from pipeline.indicators import _rsi
+    assert _rsi(pd.Series([float(x) for x in range(10, 30)])) == 100.0
+    assert _rsi(pd.Series([10.0] * 20)) == 50.0
+    mixed = _rsi(pd.Series([10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11.0]))
+    assert 0 < mixed < 100

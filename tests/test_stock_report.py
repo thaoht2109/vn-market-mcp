@@ -61,3 +61,38 @@ def test_macro_line_and_coverage_names_what_is_missing():
     assert "mới phản ánh ~85% yếu tố (thiếu tin tức)" in text
     assert "Vĩ mô 47,5/100 (trung tính): lãi suất liên ngân hàng qua đêm 2,05% (05/10)" in text
     assert "CPI so với cùng kỳ 5,08% (tháng 09/2026)" in text and "47% mã VN30 trên MA50" in text
+
+
+def test_stop_two_atrs_away_is_not_called_too_tight_but_a_slid_price_is():
+    assert "Cắt lỗ chỉ còn cách" not in _render()  # stop 4,5% away, ATR ~2,3%: a normal 2×ATR plan
+    assert "Cắt lỗ chỉ còn cách" in _render(close=31300.0)  # price slid to ~1,6% above the stop (< 1 ATR)
+
+
+def test_missing_roe_prints_no_made_up_zero():
+    snap = {**SNAP, "technical": {**SNAP["technical"], "trend": "up", "macd": 400.0},
+            "fundamental": {"industry_group": "Banks", "metrics": {"pe": 8.6}}}
+    text = render_stock_report(snap, ticker="TCB", name=None, as_of=datetime(2026, 10, 2, 8, 40, tzinfo=timezone.utc),
+                               close=32250.0, prev_close=None, volume=None, in_session=False, fund_period=None,
+                               fund_history=[], flow_rows=[])
+    assert "ROE 0,0%" not in text and "sinh lời thấp" not in text
+
+
+def test_in_session_volume_is_stated_not_judged():
+    text = _render(in_session=True, volume=2_000_000.0)
+    assert "phiên chưa đóng cửa, chưa so được với bình quân 20 phiên" in text
+    assert "thanh khoản yếu" not in text and "13%" not in text
+
+
+def test_plan_warning_copied_into_run_warnings_prints_once():
+    w = "Cắt lỗ cách 18,8% vượt biên độ HOSE (7%): có thể kẹt sàn"
+    snap = {**SNAP, "warnings": [w], "risk_plan": {**SNAP["risk_plan"], "warnings": [w]}}
+    text = render_stock_report(snap, ticker="TCB", name=None, as_of=datetime(2026, 10, 2, 8, 40, tzinfo=timezone.utc),
+                               close=32250.0, prev_close=None, volume=None, in_session=False, fund_period=None,
+                               fund_history=[], flow_rows=[])
+    assert text.count(w) == 1
+
+
+def test_flow_row_beyond_matched_value_is_shown_but_kept_out_of_the_total():
+    text = _render(flow_rows=[(date(2026, 10, 9), 51e9, 9195e9, -9144e9, False), (date(2026, 10, 8), 30e9, 2e9, 28e9, True)])
+    assert "09/10: mua 51,0 tỷ, bán 9.195,0 tỷ, ròng -9.144,0 tỷ — vượt giá trị khớp lệnh" in text
+    assert "Tổng 1 phiên: khối ngoại mua ròng 28,0 tỷ đồng." in text

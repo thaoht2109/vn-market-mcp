@@ -169,3 +169,13 @@ def test_judged_headlines_add_a_reference_score_but_never_change_the_label(seede
         with get_conn() as conn:
             conn.execute("DELETE FROM news_items WHERE source = 'test_judge'")
             conn.execute("DELETE FROM news_judgments WHERE ticker = %s", (TICKER,))
+
+
+def test_report_says_provisional_while_the_bar_is_a_mid_session_snapshot(seeded):
+    def report_when_bar_fetched_at(ts):
+        with get_conn() as conn:
+            conn.execute("UPDATE prices_daily SET fetched_at = %s WHERE ticker = %s AND trade_date = '2026-10-02'", (ts, TICKER))
+        return get_stock_report_tool(TICKER, RUN)["data"]["report"]
+
+    assert "giá tạm tính" in report_when_bar_fetched_at("2026-10-02 12:46:00+07")  # lunch break: session not closed
+    assert "giá tạm tính" not in report_when_bar_fetched_at("2026-10-02 15:20:00+07")

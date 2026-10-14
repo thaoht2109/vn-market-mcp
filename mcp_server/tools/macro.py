@@ -87,6 +87,21 @@ def _indicators(conn) -> dict:
         entry = out.setdefault(indicator, {"label": LABELS.get(indicator, indicator), "unit": unit, "source": source,
                                            "source_url": url, "series": []})
         entry["series"].append({"period": period.isoformat(), "value": float(value)})
+    for entry in out.values():
+        series = entry["series"]
+        if len(series) > 1:
+            entry["vs_prev"] = _change(series[0], series[1], entry["unit"])
+            entry["vs_oldest"] = _change(series[0], series[-1], entry["unit"])
+    return out
+
+
+def _change(newer: dict, older: dict, unit: str | None) -> dict:
+    """Newest vs an older point, so the model quotes the move instead of dividing. Rates and other
+    %-unit series get `abs` in points only: a "% change of a %" is easy to misread."""
+    delta = newer["value"] - older["value"]
+    out = {"from_period": older["period"], "abs": round(delta, 2)}
+    if not (unit or "").startswith("%") and older["value"]:
+        out["pct"] = round(delta / older["value"] * 100, 2)
     return out
 
 

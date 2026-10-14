@@ -24,14 +24,24 @@ _VN30 = (
 
 def _market(conn) -> dict | None:
     row = conn.execute(
-        "SELECT trade_date, close, change_pct, ma20, ma50, ma200, rsi14, trend, regime"
+        "SELECT trade_date, close, change_pct, ma20, ma50, ma200, rsi14, trend, regime,"
+        " computed_at < (trade_date + time '15:00') AT TIME ZONE 'Asia/Ho_Chi_Minh'"
         " FROM market_regime_daily ORDER BY trade_date DESC LIMIT 1"
     ).fetchone()
     if row is None:
         return None
-    keys = ("trade_date", "close", "change_pct", "ma20", "ma50", "ma200", "rsi14", "trend", "regime")
-    return {k: (str(v) if k == "trade_date" else float(v) if isinstance(v, (int, float)) or hasattr(v, "quantize") else v)
-            for k, v in zip(keys, row)}
+    # provisional: the row was computed mid-session (an intraday run), so close/MA/RSI are not that day's close
+    keys = ("trade_date", "close", "change_pct", "ma20", "ma50", "ma200", "rsi14", "trend", "regime", "provisional")
+    out = {k: (str(v) if k == "trade_date" else float(v) if isinstance(v, (int, float)) and not isinstance(v, bool)
+               or hasattr(v, "quantize") else v)
+           for k, v in zip(keys, row)}
+    close = out["close"]
+    for n in (20, 50, 200):
+        ma = out[f"ma{n}"]
+        out[f"pct_vs_ma{n}"] = round((close / ma - 1) * 100, 2) if close and ma else None
+    ma20 = out["ma20"]
+    out["pct_to_ma20"] = round((ma20 / close - 1) * 100, 2) if close and ma20 else None  # gain needed to get back to MA20
+    return out
 
 
 def _moves(conn, sessions: int) -> list[dict]:
@@ -39,11 +49,13 @@ def _moves(conn, sessions: int) -> list[dict]:
     rows = conn.execute(
         f"""
         WITH ranked AS (
-          SELECT ticker, close, row_number() OVER (PARTITION BY ticker ORDER BY trade_date DESC) rn
+          SELECT ticker, trade_date, close, row_number() OVER (PARTITION BY ticker ORDER BY trade_date DESC) rn
           FROM prices_daily WHERE ticker IN ({_VN30})
         )
         SELECT a.ticker, a.close, b.close FROM ranked a JOIN ranked b USING (ticker)
         WHERE a.rn = 1 AND b.rn = %s + 1
+          -- a ticker without a bar for the latest session (suspended, not yet synced) would compare older days
+          AND a.trade_date = (SELECT max(trade_date) FROM prices_daily WHERE ticker IN ({_VN30}))
         """, (sessions,),
     ).fetchall()
     out = [{"ticker": t, "close": float(c), "change_pct": round((float(c) / float(p) - 1) * 100, 2)} for t, c, p in rows]
@@ -80,9 +92,21 @@ def _flow(conn, days: int) -> dict:
     ).fetchall()
     per = sorted(((t, float(n) / 1e9) for t, n in rows), key=lambda x: x[1])
     stored = conn.execute("SELECT count(DISTINCT trade_date) FROM foreign_flow_daily").fetchone()[0]
-    return {"sessions": min(days, stored),  # DB only holds flow since it started accruing "total_bn_vnd": round(sum(n for _, n in per), 1),
+    left_out = conn.execute(
+        f"""
+        SELECT f.ticker, f.trade_date, f.net_value FROM foreign_flow_daily f JOIN prices_daily p USING (ticker, trade_date)
+        WHERE f.ticker IN ({_VN30}) AND abs(f.net_value) > p.close * p.volume
+          AND f.trade_date IN (SELECT DISTINCT trade_date FROM foreign_flow_daily ORDER BY trade_date DESC LIMIT %s)
+        ORDER BY f.trade_date
+        """, (days,),
+    ).fetchall()
+    return {"sessions": min(days, stored),  # DB only holds flow since it started accruing
+            "total_bn_vnd": round(sum(n for _, n in per), 1),
             "top_sell": [{"ticker": t, "net_bn_vnd": round(n, 1)} for t, n in per[:3]],
-            "top_buy": [{"ticker": t, "net_bn_vnd": round(n, 1)} for t, n in per[::-1][:3]]}
+            "top_buy": [{"ticker": t, "net_bn_vnd": round(n, 1)} for t, n in per[::-1][:3]],
+            # net beyond the session's matched-order value (put-through block or bad row): not in the sums above
+            "left_out": [{"ticker": t, "date": d.strftime("%d/%m"), "net_bn_vnd": round(float(n) / 1e9, 1)}
+                         for t, d, n in left_out]}
 
 
 def _skip_today(conn, now: datetime) -> bool:
@@ -91,6 +115,19 @@ def _skip_today(conn, now: datetime) -> bool:
         return not is_trading_day(conn, now.astimezone(_VN_TZ).date())
     except NoCalendarDataError:
         return False
+
+
+def _data_warnings(data: dict) -> list[str]:
+    out = []
+    m = data.get("market")
+    if m and m.get("provisional"):
+        out.append(f"VN-Index phiên {m['trade_date']} là số tạm tính giữa phiên, chưa phải giá đóng cửa: "
+                   "ghi rõ 'tạm tính', không gọi là giá chốt")
+    if data["foreign_flow"]["left_out"]:
+        out.append("Khối ngoại ròng vượt giá trị khớp lệnh cả phiên nên không tính vào tổng và top: "
+                   + ", ".join(f"{x['ticker']} {x['date']} ({x['net_bn_vnd']} tỷ)" for x in data["foreign_flow"]["left_out"])
+                   + " — có thể là giao dịch thỏa thuận hoặc lỗi dữ liệu; nếu nhắc tới thì nói rõ như vậy")
+    return out
 
 
 def get_market_digest_input_tool() -> dict:
@@ -107,7 +144,7 @@ def get_market_digest_input_tool() -> dict:
             "foreign_flow": _flow(conn, 1), "overnight_headlines": _headlines(conn, 18, 30),
             "macro_headlines": _macro_headlines(conn, 18, 15), "news_sources": status,
         }
-    return build_envelope(data, sources=["postgres"], as_of=now, warnings=source_warnings(status))
+    return build_envelope(data, sources=["postgres"], as_of=now, warnings=source_warnings(status) + _data_warnings(data))
 
 
 def get_weekly_digest_input_tool() -> dict:
@@ -127,4 +164,4 @@ def get_weekly_digest_input_tool() -> dict:
             "foreign_flow": _flow(conn, 5), "open_label_counts": labels,
             "week_headlines": _headlines(conn, 24 * 7, 40),
         }
-    return build_envelope(data, sources=["postgres"], as_of=now)
+    return build_envelope(data, sources=["postgres"], as_of=now, warnings=_data_warnings(data))

@@ -308,6 +308,12 @@ class VNStockProvider:
         """
         return self.get_foreign_flow_board([ticker]).get(ticker, [])
 
+    def get_foreign_flow_history(self, ticker: str, start: date, end: date) -> list[ForeignFlowRecord]:
+        """Settled per-day foreign flow from CafeF, for use after the close. get_foreign_flow above is only
+        the live in-session snapshot: out of hours the KBS board returned 0/0 and impossible volumes."""
+        from providers.cafef import get_foreign_flow_history  # late: cafef imports ForeignFlowRecord from here
+        return get_foreign_flow_history(ticker, start, end)
+
     def get_foreign_flow_board(self, tickers: list[str]) -> dict[str, list[ForeignFlowRecord]]:
         """get_foreign_flow for many tickers in ONE price-board request (close_sync: one call, not 34)."""
         fetched_at = datetime.now(timezone.utc)

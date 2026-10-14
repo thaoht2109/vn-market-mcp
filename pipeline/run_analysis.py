@@ -302,10 +302,13 @@ def run_analysis(
         fund.metrics, [r.metrics for r in fundamentals_records[1:]], peer_metrics(conn, ticker, industry_group),
     )
 
+    # Same plausibility rule as the report and the digests: a session whose foreign net exceeds the
+    # matched-order value (a put-through block, or a bad row) would swamp the 5-session ratio.
     flow_rows = conn.execute(
         "SELECT f.net_value, p.value FROM foreign_flow_daily f"
         " JOIN prices_daily p USING (ticker, trade_date)"
-        " WHERE f.ticker = %s ORDER BY f.trade_date DESC LIMIT 5", (ticker,),
+        " WHERE f.ticker = %s AND abs(f.net_value) <= p.close * p.volume"
+        " ORDER BY f.trade_date DESC LIMIT 5", (ticker,),
     ).fetchall()
     flow_component = flow_score(flow_rows)
 

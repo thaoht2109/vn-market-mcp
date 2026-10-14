@@ -316,3 +316,104 @@ def test_ingest_news_failures_are_recorded_in_source_health_not_swallowed(db_con
     ingest.ingest_news(db_conn, _Empty(), "ACB", date(2026, 10, 1), date(2026, 10, 2))
     assert db_conn.execute(
         "SELECT consecutive_failures FROM source_health WHERE source = 'vnstock_news'").fetchone()[0] == 0
+
+
+# --- settled foreign flow (CafeF) -------------------------------------------------------------
+
+from providers.vnstock_provider import ForeignFlowRecord  # noqa: E402
+
+
+def _flow(ticker, d, buy, sell, source="CAFEF", fetched_at=None):
+    return ForeignFlowRecord(ticker=ticker, trade_date=d, buy_value=buy, sell_value=sell, net_value=buy - sell,
+                             room_left=1.0, source=source, fetched_at=fetched_at or datetime.now(timezone.utc))
+
+
+class _HistProvider(_SyncProvider):
+    """Like _SyncProvider but with a settled flow history; a ticker listed in `fail` raises."""
+
+    def __init__(self, closes, flows, fail=()):
+        super().__init__(closes)
+        self.flows, self.fail, self.flow_calls = flows, set(fail), []
+
+    def get_foreign_flow_history(self, ticker, start, end):
+        self.flow_calls.append((ticker, start, end))
+        if ticker in self.fail:
+            raise ValueError("cafef down")
+        return self.flows.get(ticker, [])
+
+    def get_foreign_flow_board(self, tickers):
+        raise AssertionError("the KBS board must not be used when settled history exists")
+
+
+def test_sync_recent_prices_stores_settled_flow_per_ticker_and_one_failure_does_not_stop_the_rest(db_conn):
+    d = date(2020, 1, 7)
+    for t in ("CFA", "CFB"):
+        insert_ticker(db_conn, t)
+        upsert_prices(db_conn, [_stored(t, d, 100.0, datetime(2020, 1, 7, 3, 0, tzinfo=timezone.utc))])
+    # CFA already carries a wrong KBS row for the day; the settled CafeF row must replace it
+    db_conn.execute("INSERT INTO foreign_flow_daily (ticker, trade_date, buy_value, sell_value, net_value, source, fetched_at)"
+                    " VALUES ('CFA', %s, 0, 99999, -99999, 'KBS', now())", (d,))
+    provider = _HistProvider({d: 100.0}, {"CFA": [_flow("CFA", d, 5e9, 2e9)], "CFB": [_flow("CFB", d, 1e9, 1e9)]}, fail={"CFB"})
+
+    outcomes = {o.ticker: o for o in sync_recent_prices(db_conn, provider, d) if o.ticker in ("CFA", "CFB")}
+
+    assert outcomes["CFA"].status == "ok" and outcomes["CFB"].status == "error" and "cafef down" in outcomes["CFB"].detail
+    assert db_conn.execute("SELECT net_value, source FROM foreign_flow_daily WHERE ticker = 'CFA' AND trade_date = %s", (d,)).fetchone() == (3e9, "CAFEF")
+    assert all(call[2] == d and call[1] == d - timedelta(days=10) for call in provider.flow_calls)
+
+
+def test_sync_recent_prices_is_not_done_until_the_flow_is_settled_after_15h30(db_conn):
+    d = date(2020, 1, 7)
+    insert_ticker(db_conn, "CFC")
+    upsert_prices(db_conn, [_stored("CFC", d, 100.0, datetime(2020, 1, 7, 9, 0, tzinfo=timezone.utc))])  # closing bar, 16:00 VN
+    provider = _HistProvider({d: 100.0}, {"CFC": [_flow("CFC", d, 2e9, 1e9, fetched_at=datetime(2020, 1, 7, 8, 5, tzinfo=timezone.utc))]})
+
+    def pending():
+        provider.flow_calls.clear()
+        sync_recent_prices(db_conn, provider, d)
+        return [c[0] for c in provider.flow_calls if c[0] == "CFC"]
+
+    assert pending() == ["CFC"]  # bar final but no CAFEF row yet: still pending
+    db_conn.execute("UPDATE foreign_flow_daily SET fetched_at = '2020-01-07 08:05:00+00' WHERE ticker = 'CFC'")  # 15:05 VN
+    assert pending() == ["CFC"]  # stored at the 15:05 close_sync: the 18:00 retry pulls it again
+    db_conn.execute("UPDATE foreign_flow_daily SET fetched_at = '2020-01-07 11:00:00+00' WHERE ticker = 'CFC'")  # 18:00 VN
+    assert pending() == []
+
+
+def test_on_demand_flow_uses_settled_history_out_of_hours_and_the_live_snapshot_in_session(db_conn, monkeypatch):
+    import pipeline.ingest as ingest
+
+    insert_ticker(db_conn, "CFD")
+    day = date.today()
+
+    class _P:
+        def get_fundamentals(self, ticker, quarters):
+            return []
+
+        def get_foreign_flow(self, ticker, start, end):
+            return [_flow(ticker, day, 1e9, 0, source="KBS")]
+
+        def get_foreign_flow_history(self, ticker, start, end):
+            return [_flow(ticker, day, 7e9, 2e9)]
+
+    monkeypatch.setattr(ingest, "market_is_open", lambda conn, now: False)
+    assert ingest.ingest_fundamentals_and_flow(db_conn, _P(), "CFD").status == "ok"
+    assert db_conn.execute("SELECT source, net_value FROM foreign_flow_daily WHERE ticker = 'CFD'").fetchone() == ("CAFEF", 5e9)
+    monkeypatch.setattr(ingest, "market_is_open", lambda conn, now: True)
+    ingest.ingest_fundamentals_and_flow(db_conn, _P(), "CFD")
+    assert db_conn.execute("SELECT source FROM foreign_flow_daily WHERE ticker = 'CFD'").fetchone() == ("KBS",)
+
+
+def test_market_is_open_only_in_continuous_hours_of_a_trading_day(db_conn):
+    from pipeline.ingest import market_is_open
+
+    db_conn.execute("INSERT INTO trading_calendar (trade_date, is_trading_day, note) VALUES ('2099-01-05', true, NULL), "
+                    "('2099-01-06', false, 'holiday') ON CONFLICT (trade_date) DO UPDATE SET is_trading_day = EXCLUDED.is_trading_day")
+
+    def at(day, hh, mm):
+        return datetime(2099, 1, day, hh - 7, mm, tzinfo=timezone.utc)
+
+    assert not market_is_open(db_conn, at(5, 8, 59)) and market_is_open(db_conn, at(5, 9, 0))
+    assert market_is_open(db_conn, at(5, 12, 0)) and not market_is_open(db_conn, at(5, 15, 0))  # lunch break counts as open
+    assert not market_is_open(db_conn, at(6, 10, 0))  # holiday
+    assert not market_is_open(db_conn, datetime(2150, 1, 5, 3, 0, tzinfo=timezone.utc))  # calendar not seeded that far
