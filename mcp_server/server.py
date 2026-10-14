@@ -6,6 +6,7 @@ see .env.example for MCP_RO_DATABASE_URL / PIPELINE_RW_DATABASE_URL.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -22,6 +23,7 @@ from mcp_server.tools.positions import clear_position_tool, set_position_tool
 from mcp_server.tools.predictions import list_predictions_tool
 from mcp_server.tools.run_analysis import get_job_status_tool, run_analysis_tool
 from mcp_server.tools.snapshot import get_snapshot_tool
+from mcp_server.tools.stock_answer import analyze_stock_tool, get_stock_answer_tool
 from mcp_server.tools.stock_report import get_stock_report_tool, judge_news_tool, save_commentary_tool
 from mcp_server.tools.stats import get_stats_tool
 from mcp_server.tools.watchlist import list_watchlist_tool, unwatch_ticker_tool, watch_ticker_tool
@@ -37,6 +39,22 @@ def run_analysis(ticker: str, style: str = "long", depth: str = "quick") -> dict
     sau khi job xong (worker gửi kết quả qua Telegram).
     """
     return run_analysis_tool(ticker, style=style, depth=depth)
+
+
+@mcp.tool()
+async def analyze_stock(ticker: str, job_id: str | None = None) -> dict[str, Any]:
+    """Phân tích một mã từ đầu đến cuối: chạy (hoặc dùng lại) phân tích đầy đủ, tự chờ job (tối đa ~45 giây),
+    rồi trả data.next = việc duy nhất còn lại cho bạn, data.final = nguyên văn câu trả lời khi đã đủ.
+
+    next: judge_news | write_commentary | delegate_advisor | send | pending | failed | fallback — xem SKILL.
+    job_id: chờ đúng job đó (job của watch_ticker, hoặc job của lần trả về next="pending")."""
+    return await asyncio.to_thread(analyze_stock_tool, ticker, job_id)
+
+
+@mcp.tool()
+def get_stock_answer(ticker: str, run_id: str) -> dict[str, Any]:
+    """Bước tiếp theo của câu trả lời cho run_id (cùng dạng analyze_stock); gọi lại sau judge_news / save_commentary."""
+    return get_stock_answer_tool(ticker, run_id)
 
 
 @mcp.tool()
@@ -167,7 +185,7 @@ def get_stock_report(ticker: str, run_id: str) -> dict[str, Any]:
 
     Nếu data.needs_commentary=False: báo cáo là nguyên văn data.final.
     Nếu True: viết đoạn nhận định ngắn, gọi save_commentary; báo cáo là data.report + nhận định.
-    Trước khi trả lời người dùng: góc nhìn cố vấn (get_advisor_input), theo SKILL bước 2b.
+    Luồng trả lời thường dùng analyze_stock/get_stock_answer; tool này cho bước dự phòng.
     """
     return get_stock_report_tool(ticker, run_id)
 
@@ -184,7 +202,7 @@ def save_commentary(ticker: str, run_id: str, commentary: str) -> dict[str, Any]
 
 @mcp.tool()
 def judge_news(ticker: str, judgments: list[dict[str, Any]]) -> dict[str, Any]:
-    """Lưu đánh giá tốt/xấu cho các tin trong data.news_to_judge của get_stock_report, rồi gọi lại get_stock_report.
+    """Lưu đánh giá tốt/xấu cho các tin trong data.news_to_judge của get_stock_answer, rồi gọi lại get_stock_answer.
 
     judgments: [{"id": <id trong news_to_judge>, "sentiment": 1 | 0 | -1, "reason": "<một câu>"}].
     1 = có lợi cho giá/kết quả kinh doanh của chính mã này, -1 = bất lợi, 0 = không ảnh hưởng rõ hoặc chỉ là
@@ -208,8 +226,9 @@ def get_advisor_input(ticker: str, run_id: str) -> dict[str, Any]:
 def save_advice(ticker: str, run_id: str, stance: str, reasons: list[str], plan: list[str], risk: str) -> dict[str, Any]:
     """Kiểm tra rồi lưu góc nhìn cố vấn (stance phải thuộc data.stances của get_advisor_input).
 
-    status='saved' → gửi nguyên văn data.final. status='rejected' → KHÔNG gửi; sửa đúng data.issues rồi gọi lại
-    (số liệu phải có trong dữ liệu cố vấn, không từ ngữ nội bộ; reasons, plan, risk có nội dung, tổng 80–220 từ). Góc nhìn đầu tiên được giữ.
+    status='saved' → gửi nguyên văn data.final (đã kèm dòng miễn trừ). status='rejected' → KHÔNG gửi; chỉ bỏ đúng
+    data.issues rồi gọi lại (số liệu phải có trong dữ liệu cố vấn, không từ ngữ nội bộ; reasons, plan, risk có nội dung,
+    tổng 80–220 từ). status='dropped' → bỏ qua lặng lẽ, không gửi gì. Góc nhìn đầu tiên được giữ.
     """
     return save_advice_tool(ticker, run_id, stance, reasons, plan, risk)
 

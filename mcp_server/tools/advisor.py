@@ -18,9 +18,10 @@ from mcp_server.connection import get_ro_conn, get_rw_conn
 from mcp_server.envelope import build_envelope
 from mcp_server.identity import pinned_user
 from mcp_server.tools.stock_report import _load, verify_commentary
-from pipeline.stock_report import _n, _pct
+from pipeline.stock_report import DISCLAIMER, _n, _pct
 
 ADVISOR_TITLE = "**Góc nhìn cố vấn**"
+_rejected: dict[str, int] = {}  # ponytail: per-process, like stock_report.REJECTED
 STANCES = {True: ("hold", "reduce_exit"), False: ("buy_accumulate", "watch", "stay_out")}  # by holding
 _STANCE_VI = {"buy_accumulate": "tích lũy dần", "watch": "theo dõi, chưa giải ngân", "stay_out": "đứng ngoài",
               "hold": "tiếp tục nắm giữ", "reduce_exit": "giảm tỷ trọng"}
@@ -145,8 +146,10 @@ def save_advice_tool(ticker: str, run_id: str, stance: str, reasons: list[str], 
     if not (parts["reasons"] and parts["plan"] and parts["risk"]):
         issues.append("Thiếu phần: cần reasons, plan và risk, mỗi phần có nội dung.")
     issues += verify_commentary(" ".join(parts["reasons"] + parts["plan"] + [parts["risk"]]), text, stance)
-    if issues:
-        return build_envelope({"status": "rejected", "issues": issues}, sources=["postgres"], as_of=now)
+    if issues:  # one fix allowed, then "dropped": the view is skipped silently
+        _rejected[run_id] = _rejected.get(run_id, 0) + 1
+        status = "rejected" if _rejected[run_id] < 2 else "dropped"
+        return build_envelope({"status": status, "issues": issues}, sources=["postgres"], as_of=now)
     with get_rw_conn() as conn:
         conn.execute(
             "INSERT INTO advisor_views (user_id, run_id, ticker, holding, stance, code_label, advice, playbook_version)"
@@ -154,4 +157,5 @@ def save_advice_tool(ticker: str, run_id: str, stance: str, reasons: list[str], 
             (user or "shared", run_id, ticker, holding, stance, loaded[3], advice, version),
         )
         saved = _saved(conn, user or "shared", run_id)
-    return build_envelope({"status": "saved", "final": render_advice(*saved)}, sources=["postgres"], as_of=now)
+    return build_envelope({"status": "saved", "final": f"{render_advice(*saved)}\n\n{DISCLAIMER}"},
+                          sources=["postgres"], as_of=now)

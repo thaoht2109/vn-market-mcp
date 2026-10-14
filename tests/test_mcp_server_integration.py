@@ -5,12 +5,12 @@ from mcp_server.server import mcp
 
 
 @pytest.mark.asyncio
-async def test_server_lists_all_twenty_three_tools():
+async def test_server_lists_all_twenty_five_tools():
     async with create_connected_server_and_client_session(mcp._mcp_server) as client:
         tools = await client.list_tools()
         names = {t.name for t in tools.tools}
         assert names == {
-            "run_analysis", "get_job_status", "get_snapshot", "query_history", "explain_run",
+            "run_analysis", "analyze_stock", "get_stock_answer", "get_job_status", "get_snapshot", "query_history", "explain_run",
             "list_predictions", "get_stats", "set_position", "clear_position",
             "watch_ticker", "unwatch_ticker", "list_watchlist",
             "get_stock_report", "save_commentary", "get_market_digest_input", "get_weekly_digest_input",

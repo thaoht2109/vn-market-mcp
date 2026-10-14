@@ -30,6 +30,10 @@ _RULES = Path(__file__).resolve().parents[2] / "config" / "vn-rules.yaml"
 # Deterministic inputs of the report; excludes as_of / run ids / LLM text (synthesis, debate, news).
 _SNAPSHOT_KEYS = ("technical", "fundamental", "risk_plan", "composite_score", "weight_coverage",
                   "confidence", "action_label", "warnings", "market", "components", "macro")
+# ponytail: per-process memory of what the model already tried (stock_answer reads it to stop asking);
+# a restart only allows a few more tries. Move to a table if that ever matters.
+REJECTED: dict[str, tuple[int, list[str]]] = {}  # run_id -> (rejected commentaries, last issues)
+NEWS_TRIED: set = set()  # (ticker, news id) already handed to the model to judge, asked once
 
 
 def fingerprint(snapshot: dict, closes: list, flow: list, news: list = ()) -> str:
@@ -109,7 +113,7 @@ def _load(ticker: str, run_id: str):
         news_rows=news, with_news=_with_news(snapshot, style, rules, news, run_as_of),
     )
     to_judge = [{"id": nid, "date": at.astimezone(_VN_TZ).strftime("%d/%m %H:%M"), "title": title, "source": src}
-                for at, title, src, nid, sentiment, _r in news if sentiment is None]
+                for at, title, src, nid, sentiment, _r in news if sentiment is None and (ticker, nid) not in NEWS_TRIED]
     return (report, fingerprint(snapshot, px, flow, news), run_as_of, snapshot.get("action_label"), to_judge), None
 
 
@@ -186,6 +190,7 @@ def save_commentary_tool(ticker: str, run_id: str, commentary: str) -> dict:
         return build_envelope({"status": "not_saved", "reason": err}, sources=["postgres"], as_of=now)
     issues = verify_commentary(commentary, loaded[0], loaded[3])
     if issues:  # not cached, not to be sent: Hermes must fix these and call again
+        REJECTED[run_id] = (REJECTED.get(run_id, (0,))[0] + 1, issues)
         return build_envelope({"status": "rejected", "issues": issues}, sources=["postgres"], as_of=now)
     with get_rw_conn() as conn:
         conn.execute(

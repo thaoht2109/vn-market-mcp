@@ -4,6 +4,7 @@ import pandas as pd
 
 from db.connection import get_conn
 from mcp_server.tools.advisor import _raw, get_advisor_input_tool, playbook, render_advice, save_advice_tool
+from pipeline.stock_report import DISCLAIMER
 from ops.backtest_score import forward_excess, known_quarters, quarter_end
 from tests.test_mcp_stock_report import GOOD, RUN, TICKER, seeded  # noqa: F401  (fixture)
 
@@ -32,14 +33,14 @@ def test_advisor_sees_no_label_and_its_first_view_is_kept_next_to_the_label(seed
 
         assert _advise("hold")["status"] == "rejected"  # not holding
         bad = _advise("stay_out", " Mục tiêu 999.")
-        assert bad["status"] == "rejected" and "999" in bad["issues"][0]
+        assert bad["status"] == "dropped" and "999" in bad["issues"][0]  # second rejection: stop retrying
 
         saved = _advise("stay_out")
-        assert saved["status"] == "saved" and "đứng ngoài" in saved["final"]
+        assert saved["status"] == "saved" and "đứng ngoài" in saved["final"] and saved["final"].endswith(DISCLAIMER)
         assert "Khác nhãn hệ thống (theo dõi, chưa giải ngân)" in saved["final"]
         again = _advise("watch")
         assert "Khác nhãn hệ thống" in again["final"]  # first view wins
-        assert get_advisor_input_tool(TICKER, RUN)["data"] == {"status": "advised", "final": saved["final"]}
+        assert get_advisor_input_tool(TICKER, RUN)["data"] == {"status": "advised", "final": saved["final"].removesuffix(f"\n\n{DISCLAIMER}")}
         with get_conn() as conn:
             version = conn.execute("SELECT playbook_version FROM advisor_views WHERE ticker = %s", (TICKER,)).fetchone()[0]
         assert version == playbook(None)[1] and len(version) == 8
