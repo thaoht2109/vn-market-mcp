@@ -1,0 +1,29 @@
+# Postgres, on its own. Run from this directory (`cd infrastructure/db && docker compose up -d`) or from the
+# repo root with `docker compose -f infrastructure/db/docker-compose.yml ...`; Compose reads infrastructure/db/.env.
+# Everything else (pipeline, Hermes, the MCP service) reaches it as a client, by host and port: the published
+# POSTGRES_PUBLISH_BIND:POSTGRES_PUBLISH_PORT, or, for Hermes' MCP servers, postgres:POSTGRES_PORT on this
+# project's default network. Moving Postgres to its own server = move this folder and point those clients at it.
+
+# Pinned so the volume (<name>_pgdata) and network (<name>_default, which the Hermes gateway joins
+# externally) keep their names. Do not rename: it would start an empty database.
+name: ${COMPOSE_PROJECT_NAME:-vn-market-mcp}
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16}
+    environment:
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-vnmcp_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-changeme_local_only}
+      POSTGRES_DB: ${POSTGRES_DB:-vnmcp}
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+      PGPORT: ${POSTGRES_PORT:-5433}
+    # Non-default in-network port: 5432 is blocked by an iptables rule on the original host,
+    # and Hermes' MCP URLs point at postgres:5433.
+    command: ["-p", "${POSTGRES_PORT:-5433}"]
+    ports:
+      - "${POSTGRES_PUBLISH_BIND:-127.0.0.1}:${POSTGRES_PUBLISH_PORT:-55432}:${POSTGRES_PORT:-5433}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

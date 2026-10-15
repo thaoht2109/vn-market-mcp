@@ -84,7 +84,7 @@ Tài liệu thiết kế: [`docs/design/vn-trading-agent-plan_final.md`](docs/de
  worker ──chỉ lỗi vận hành──► nhóm ops (TELEGRAM_ALERT_CHAT_ID, bot chung)
 ```
 
-Các service trong `infrastructure/docker-compose.yml`:
+Các service trong `infrastructure/db/docker-compose.yml` (`postgres`) và `infrastructure/pipeline/docker-compose.yml` (`worker`, `scheduler`, `grading`, `retention`):
 
 | Service | Lệnh | Vai trò |
 |---|---|---|
@@ -126,7 +126,7 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 | `tests/` | Test pytest, chạy bằng `./run_tests.sh` từ host. Không đưa vào image |
 | `.hermes/skills/vn-market/vn-stock-analyze/` | Skill duy nhất cho phân tích cổ phiếu VN: định tuyến câu hỏi sang tool MCP, giọng văn, quy trình báo cáo. Dùng chung, chỉ đọc cho mọi profile |
 | `config/` | `vn-rules.yaml` (ngưỡng nghiệp vụ), `models.yaml` (mô hình LLM) |
-| `infrastructure/` | `docker-compose.yml`, `Dockerfile` (+ `.dockerignore`), `.env.example`, `hermes/` (`docker-compose.yml` + `.env.example` của stack Hermes: gateway, `mcp-venv-init`, dashboard): toàn bộ cấu hình Docker, mọi giá trị phụ thuộc máy (cổng, đường dẫn, tên project, số worker) khai báo qua `infrastructure/.env` |
+| `infrastructure/` | một thư mục cho mỗi loại hạ tầng, mỗi thư mục có `docker-compose.yml` và `.env.example` riêng: `db/` (Postgres), `pipeline/` (worker, scheduler, grading, retention + `Dockerfile` và `.dockerignore`), `hermes/` (`docker-compose.yml` + `.env.example` của stack Hermes: gateway, `mcp-venv-init`, dashboard): toàn bộ cấu hình Docker, mọi giá trị phụ thuộc máy (cổng, đường dẫn, tên project, số worker) khai báo qua `infrastructure/<loại>/.env` |
 
 ## 4. Yêu cầu
 
@@ -142,12 +142,12 @@ MCP server **không** chạy trong compose này. Hermes gateway khởi chạy n�
 
 ```bash
 cp .env.example .env && chmod 600 .env                                              # lệnh chạy trên host
-cp infrastructure/.env.example infrastructure/.env && chmod 600 infrastructure/.env  # stack Docker
+for d in db pipeline hermes; do cp infrastructure/$d/.env.example infrastructure/$d/.env && chmod 600 infrastructure/$d/.env; done  # từng stack Docker
 ```
 
-`.env` gốc có `COMPOSE_FILE=infrastructure/docker-compose.yml`, nên mọi lệnh `docker compose ...` trong tài liệu này chạy được từ thư mục gốc. Compose lấy biến từ `infrastructure/.env` (thư mục chứa file compose); các mật khẩu role ở hai file phải trùng nhau.
+`.env` gốc có `COMPOSE_FILE=infrastructure/db/docker-compose.yml`, nên `docker compose ... postgres` chạy được từ thư mục gốc; lệnh cho pipeline viết đủ `-f infrastructure/pipeline/docker-compose.yml`. Compose lấy biến từ `.env` trong thư mục chứa file compose; các mật khẩu role ở `.env` gốc và `infrastructure/pipeline/.env` phải trùng nhau. Pipeline nối Postgres như một client qua `DB_HOST:DB_PORT` (host networking), không qua network Compose.
 
-Khi chuyển sang máy khác, chỉ cần sửa `infrastructure/.env`: `POSTGRES_PUBLISH_PORT`/`POSTGRES_PUBLISH_BIND` (cổng trên host, khớp với `localhost:<cổng>` trong các URL ở `.env` gốc), `SNAPSHOTS_DIR` (thư mục snapshot, phải trùng với thư mục Hermes gateway mount), `WORKER_REPLICAS`, image. Giữ `COMPOSE_PROJECT_NAME=vn-market-mcp` trừ khi đổi luôn tên mạng `<tên>_default` bên Hermes; đổi tên này cũng tạo volume DB mới (`<tên>_pgdata`).
+Khi chuyển sang máy khác, chỉ cần sửa các `infrastructure/<loại>/.env`: `db/.env` có `POSTGRES_PUBLISH_PORT`/`POSTGRES_PUBLISH_BIND` (cổng trên host, khớp với `localhost:<cổng>` trong các URL ở `.env` gốc), `pipeline/.env` có `DB_HOST`/`DB_PORT` (khớp cổng publish), `SNAPSHOTS_DIR` (thư mục snapshot, phải trùng với thư mục Hermes gateway mount), `WORKER_REPLICAS`, image. Giữ `COMPOSE_PROJECT_NAME=vn-market-mcp` trừ khi đổi luôn tên mạng `<tên>_default` bên Hermes; đổi tên này cũng tạo volume DB mới (`<tên>_pgdata`).
 
 Điền các biến `MCP_RO_PASSWORD`, `PIPELINE_RW_PASSWORD`, `RETENTION_JOB_PASSWORD`, `*_DATABASE_URL`, `VNSTOCK_API_KEY`, `TELEGRAM_BOT_TOKEN` và `TELEGRAM_ALERT_CHAT_ID`.
 
@@ -180,7 +180,7 @@ Chạy lại `seed_market_data.py` khi rổ VN30 thay đổi, và ít nhất m�
 **5.4. Chạy toàn bộ hệ thống**
 
 ```bash
-docker compose up -d --build
+docker compose -f infrastructure/pipeline/docker-compose.yml up -d --build
 ```
 
 ## 6. Vận hành
@@ -188,7 +188,7 @@ docker compose up -d --build
 Phân tích một mã theo yêu cầu (nên chạy trong container để dùng địa chỉ mạng nội bộ ổn định):
 
 ```bash
-docker compose exec worker python -m pipeline.run_analysis VNM --style long --depth quick
+docker compose -f infrastructure/pipeline/docker-compose.yml exec worker python -m pipeline.run_analysis VNM --style long --depth quick
 ```
 
 Các bước pipeline thực hiện:
@@ -235,8 +235,8 @@ Mỗi job `on_demand` ghi người yêu cầu vào `jobs.requested_by` (để tr
 Áp dụng migration mới cho hệ thống đang chạy. Chạy trong container `scheduler`, container duy nhất có tài khoản quản trị (`ADMIN_DATABASE_URL`); `worker` chỉ có `pipeline_rw`, không tạo được bảng. Image đóng gói sẵn thư mục migration, nên build lại `scheduler` trước để nó thấy file mới:
 
 ```bash
-docker compose up -d --build scheduler
-docker compose exec scheduler sh -c 'DATABASE_URL=$ADMIN_DATABASE_URL python -c "
+docker compose -f infrastructure/pipeline/docker-compose.yml up -d --build scheduler
+docker compose -f infrastructure/pipeline/docker-compose.yml exec scheduler sh -c 'DATABASE_URL=$ADMIN_DATABASE_URL python -c "
 from pathlib import Path; from db.connection import get_conn; from db.migrate import apply_migrations
 with get_conn() as c: print(apply_migrations(c, Path(\"db/migrations\")))"'
 ```
@@ -397,7 +397,7 @@ Profile `default` không đặt `VNMCP_USER_ID`, nên MCP server của nó khôn
 | Thêm, xóa, đổi token hay nhóm của một người dùng | Không restart (`ops/add_user.sh`, `ops/remove_user.sh`) |
 | Code `mcp_server/` hoặc skill chung (`.hermes/skills/`) sau khi merge vào `main` | `docker restart -t 60 hermes-gateway` |
 | `~/.hermes/config.yaml` hoặc `~/.hermes/.env` của `default` (bot chung, nhóm chung) | `docker restart -t 60 hermes-gateway` |
-| Code pipeline/worker/scheduler | `docker compose up -d --build worker scheduler` (không đụng tới chat) |
+| Code pipeline/worker/scheduler | `docker compose -f infrastructure/pipeline/docker-compose.yml up -d --build worker scheduler` (không đụng tới chat) |
 
 Restart gateway làm mọi người dùng gián đoạn khoảng 40 giây, và tin nhắn tới trong lúc đó bị bỏ (`drop_pending_on_cold_boot`). Nên làm ngoài giờ giao dịch; `-t 60` cho câu trả lời đang viết kịp xong thay vì bị cắt sau 10 giây mặc định.
 
@@ -475,7 +475,7 @@ Có thể kiểm thử không cần Hermes bằng MCP Inspector: `npx @modelcont
 - **`config/models.yaml`** khai báo mô hình cho các vai trò LLM trong pipeline. Hiện không dùng vì pipeline đang tắt LLM.
 - **Bật lại vai trò LLM trong pipeline:**
   1. Đặt `llm.pipeline_enabled: true`.
-  2. Thêm khóa provider (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, …) vào service `worker` trong `infrastructure/docker-compose.yml` và `infrastructure/.env`.
+  2. Thêm khóa provider (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, …) vào service `worker` trong `infrastructure/pipeline/docker-compose.yml` và `infrastructure/pipeline/.env`.
 
 ## 12. Kiểm thử
 
@@ -536,12 +536,12 @@ Không đồng bộ liên tục `~/.hermes` khi gateway đang chạy (rsync theo
 
 **Chuyển sang máy mới từ bản zip** (máy cũ hỏng):
 
-1. Cài Docker, clone repo này, tạo `.env` và `infrastructure/.env` (cùng mật khẩu role như máy cũ), rồi khôi phục DB:
+1. Cài Docker, clone repo này, tạo `.env` và `infrastructure/{db,pipeline,hermes}/.env` (cùng mật khẩu role như máy cũ), rồi khôi phục DB:
    ```bash
    docker compose up -d postgres
    docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-acl --exit-on-error' < vnmcp_<thời điểm>.dump
    set -a; . ./.env; set +a; python -m db.setup_roles
-   docker compose up -d
+   docker compose -f infrastructure/pipeline/docker-compose.yml up -d
    ```
 2. Giải mã bản zip, chép vào `~/.hermes/`, rồi chạy `docker compose -f infrastructure/hermes/docker-compose.yml up -d`.
 3. `docker exec -u hermes hermes-gateway hermes import --force /opt/data/<file>.zip`. Zip phải nằm trong `~/.hermes`, để user `hermes` trong container đọc được.
