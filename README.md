@@ -419,7 +419,7 @@ Lệnh làm, không restart gì:
 | Bước | Việc |
 |---|---|
 | Kiểm tra token | Gọi `getMe` của Telegram; từ chối token đang được profile khác dùng (hai profile cùng một token sẽ tranh nhau tin nhắn) |
-| Profile | Tạo bằng `--clone` nếu chưa có (xóa trắng `memories/USER.md` vì bản clone mang ghi chú về người khác), đặt `VNMCP_USER_ID`, đảm bảo nạp skill chung |
+| Profile | Tạo bằng `--clone --clone-from default` nếu chưa có (xóa trắng `memories/USER.md` vì bản clone mang ghi chú về người khác), đặt `VNMCP_USER_ID`, đảm bảo nạp skill chung |
 | `.env` của profile | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` (chỉ chủ bot), `TELEGRAM_GROUP_ALLOWED_CHATS` (nhóm riêng, nếu có) |
 | Dọn cấu hình cũ | Luật `profile_routes` và id trong danh sách cho phép của bot chung từ thời dùng bot chung (nếu có): xóa khỏi file, gateway bỏ ở lần restart tới |
 | Bật bot | Gọi `rescan-profiles`, chờ log `✓ telegram connected (profile: <tên>)`; báo lỗi và trả mã khác 0 nếu thấy `✗ telegram failed to connect`. Cuối cùng `mcp test` |
