@@ -53,7 +53,7 @@ PY
 echo "2/4 profile $NAME"
 NEW_PROFILE=0
 if ! docker exec "$HERMES" test -d "/opt/data/profiles/$NAME"; then
-  docker exec -u hermes "$HERMES" hermes profile create "$NAME" --clone --no-alias --description "vn-market cá nhân: $NAME" >/dev/null
+  docker exec -u hermes "$HERMES" hermes profile create "$NAME" --clone --clone-from default --no-alias --description "vn-market cá nhân: $NAME" >/dev/null
   NEW_PROFILE=1
 fi
 docker exec -u hermes "$HERMES" sh -c "mkdir -p /opt/data/backups/add_user-$STAMP && cp /opt/data/config.yaml /opt/data/.env /opt/data/backups/add_user-$STAMP/ && cp /opt/data/profiles/$NAME/config.yaml /opt/data/backups/add_user-$STAMP/config.$NAME.yaml && cp /opt/data/profiles/$NAME/.env /opt/data/backups/add_user-$STAMP/env.$NAME"
