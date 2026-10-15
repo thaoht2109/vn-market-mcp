@@ -1,7 +1,7 @@
 """MCP tool wrapping pipeline.jobs.enqueue.
 
 §4.1 of the spec requires run_analysis to return a job_id immediately and
-have a background worker run the pipeline (results pushed via Telegram),
+have a background worker run the pipeline (the caller polls get_job_status; nothing is pushed),
 so the MCP call never blocks for the duration of one full pipeline run.
 The worker itself lives in ops/worker.py and polls the `jobs` table.
 
@@ -12,6 +12,7 @@ computed moments ago).
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,16 @@ from ops.alerting import log_event
 from pipeline.calendar import NoCalendarDataError, latest_trading_day
 from pipeline.jobs import enqueue, get_job
 from pipeline.run_analysis import CONFIG_PATH
+
+
+_TICKER = re.compile(r"[A-Z0-9]{1,10}")  # VN tickers: 3 letters, up to 8-10 for warrants/ETFs
+# Max queued/running jobs per user. None (Telegram) = no cap; a host serving outside users sets it at startup.
+MAX_PENDING_PER_USER: int | None = None
+
+
+def _refused(status: str, ticker: str, now: datetime, warning: str) -> dict:
+    return build_envelope({"job_id": None, "status": status, "ticker": ticker}, sources=["postgres"], as_of=now,
+                          warnings=[warning])
 
 
 def _latest_run(conn, ticker: str, style: str, depth: str):
@@ -77,6 +88,9 @@ def _cache_is_fresh(conn, run_as_of: datetime, now: datetime, rules: dict) -> bo
 
 def run_analysis_tool(ticker: str, style: str = "long", depth: str = "quick") -> dict:
     now = datetime.now(timezone.utc)
+    ticker = ticker.strip().upper()
+    if not _TICKER.fullmatch(ticker):  # before any job: a junk symbol would cost a worker run and a vnstock lookup
+        return _refused("invalid_ticker", ticker[:20], now, "Mã không hợp lệ: chỉ gồm chữ và số, tối đa 10 ký tự.")
     rules = yaml.safe_load(CONFIG_PATH.read_text())
 
     with get_rw_conn() as conn:
@@ -100,6 +114,16 @@ def run_analysis_tool(ticker: str, style: str = "long", depth: str = "quick") ->
                 {"job_id": job_key, "status": status, "ticker": ticker},
                 sources=["postgres"], as_of=now,
             )
+
+        user = pinned_user()
+        # Reusing or joining a run costs nothing (above); a new job must not let one user fill the shared queue.
+        if user and MAX_PENDING_PER_USER is not None:
+            open_jobs = conn.execute(
+                "SELECT count(*) FROM jobs WHERE requested_by IN (%s, %s) AND status IN ('queued', 'running')",
+                (f"user:{user}", f"watch:{user}")).fetchone()[0]
+            if open_jobs >= MAX_PENDING_PER_USER:
+                return _refused("too_many_pending", ticker, now,
+                                f"Bạn đang có {open_jobs} phân tích chưa xong; đợi chúng hoàn tất rồi thử lại.")
 
         job_key, created = enqueue(
             conn, ticker, job_type="on_demand", style=style, depth=depth,

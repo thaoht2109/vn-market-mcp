@@ -8,3 +8,6 @@ __pycache__/
 .code-review-graph/
 snapshots/
 backups/
+
+# Local MCP client config (may hold tokens)
+.mcp.json

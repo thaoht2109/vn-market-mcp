@@ -158,3 +158,44 @@ def test_cache_reuses_post_close_run_before_close_settled(db_conn):
     run_as_of = datetime(2026, 9, 2, 8, 5, tzinfo=timezone.utc)  # 15:05 VN, closing price final
     now = datetime(2026, 9, 2, 8, 15, tzinfo=timezone.utc)  # 15:15 VN, inside the settle window
     assert _cache_is_fresh(db_conn, run_as_of, now, _RULES) is True
+
+
+def test_invalid_ticker_is_refused_before_any_database_work():
+    with patch("mcp_server.tools.run_analysis.get_rw_conn") as mock_conn:
+        for bad in ("", "AB CD", "VNM;DROP", "ABCDEFGHIJK", "vn-m"):
+            out = run_analysis_tool(bad)["data"]
+            assert out["status"] == "invalid_ticker" and out["job_id"] is None
+    mock_conn.assert_not_called()
+
+
+def test_ticker_is_normalized_before_the_job_is_queued():
+    fake_conn = MagicMock()
+    fake_conn.execute.return_value.fetchone.return_value = None
+    with patch("mcp_server.tools.run_analysis.get_rw_conn") as mock_conn, \
+         patch("mcp_server.tools.run_analysis.enqueue", return_value=("on_demand:VNM:1", True)) as enq, \
+         patch("mcp_server.tools.run_analysis.log_event"):
+        mock_conn.return_value.__enter__.return_value = fake_conn
+        assert run_analysis_tool(" vnm ")["data"]["ticker"] == "VNM"
+    assert enq.call_args.args[1] == "VNM"
+
+
+def test_pending_cap_applies_only_when_a_host_sets_it(monkeypatch):
+    from mcp_server.tools import run_analysis as ra
+
+    def run(user, open_jobs):
+        fake_conn = MagicMock()
+        fake_conn.execute.return_value.fetchone.side_effect = [None, None, (open_jobs,)]  # no run, no job to join, count
+        monkeypatch.setattr(ra, "pinned_user", lambda: user)
+        with patch("mcp_server.tools.run_analysis.get_rw_conn") as mock_conn, \
+             patch("mcp_server.tools.run_analysis.enqueue", return_value=("on_demand:VNM:1", True)) as enq, \
+             patch("mcp_server.tools.run_analysis.log_event"):
+            mock_conn.return_value.__enter__.return_value = fake_conn
+            return run_analysis_tool("VNM")["data"], enq
+
+    out, enq = run("123456", 99)  # default (Telegram): no cap, the count isn't even read
+    assert out["status"] == "queued"
+    monkeypatch.setattr(ra, "MAX_PENDING_PER_USER", 5)
+    out, enq = run("123456", 5)
+    assert out["status"] == "too_many_pending" and not enq.called
+    out, enq = run("123456", 4)
+    assert out["status"] == "queued" and enq.called
