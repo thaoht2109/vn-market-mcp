@@ -2,7 +2,9 @@
 # machine can rebuild it; derived from github.com/DeployFaith/hermes-docker-compose plus the
 # mcp-venv-init service and the vn-market-mcp network/mount. Same project name as the original
 # checkout, so on this machine it manages the very same containers.
-#   docker compose -f infrastructure/hermes-compose.yml up -d
+#   cd infrastructure/hermes && docker compose up -d     (or: docker compose -f infrastructure/hermes/docker-compose.yml up -d)
+# Settings (HERMES_DATA_DIR, VN_MARKET_MCP_DIR, GATEWAY_PORT, DASHBOARD_PORT) come from infrastructure/hermes/.env,
+# see .env.example; the defaults below are the original single-host setup.
 name: hermes-docker-compose
 
 services:
@@ -17,7 +19,7 @@ services:
     entrypoint: ["/bin/sh", "/opt/vn-market-mcp/ops/setup_venv.sh"]
     volumes:
       - ${HERMES_DATA_DIR:-${HOME:-/root}/.hermes}:/opt/data
-      - ${VN_MARKET_MCP_DIR:-..}:/opt/vn-market-mcp:ro
+      - ${VN_MARKET_MCP_DIR:-../..}:/opt/vn-market-mcp:ro
     restart: "no"
 
   # ---------------------------------------------------------------------------
@@ -35,7 +37,7 @@ services:
       - "${GATEWAY_PORT:-8642}:8642"
     volumes:
       - ${HERMES_DATA_DIR:-${HOME:-/root}/.hermes}:/opt/data
-      - ${VN_MARKET_MCP_DIR:-..}:/opt/vn-market-mcp:ro
+      - ${VN_MARKET_MCP_DIR:-../..}:/opt/vn-market-mcp:ro
     shm_size: 1g
     networks:
       - hermes-net
