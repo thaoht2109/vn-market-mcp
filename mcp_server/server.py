@@ -36,7 +36,7 @@ def run_analysis(ticker: str, style: str = "long", depth: str = "quick") -> dict
     """Xếp hàng chạy pipeline phân tích cho một mã, trả job_id ngay (không chặn).
 
     Dùng get_job_status(job_id) để theo dõi, hoặc explain_run/get_snapshot
-    sau khi job xong (worker gửi kết quả qua Telegram).
+    sau khi job xong (không có thông báo đẩy: phải tự hỏi lại).
     """
     return run_analysis_tool(ticker, style=style, depth=depth)
 

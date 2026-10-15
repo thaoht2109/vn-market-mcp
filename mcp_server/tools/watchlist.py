@@ -16,12 +16,26 @@ from pipeline.positions import personalize
 from providers.vnstock_provider import VNStockProvider
 
 
+# Max tickers one user watches (each is analysed every session). None (Telegram) = no cap; a host serving
+# outside users sets it at startup.
+MAX_WATCHES_PER_USER: int | None = None
+
+
 def watch_ticker_tool(ticker: str) -> dict:
     now = datetime.now(timezone.utc)
     user = pinned_user()
     if user is None:
         return no_personal_scope(now)
     with get_rw_conn() as conn:
+        if (limit := MAX_WATCHES_PER_USER) is not None:
+            symbol = ticker.strip().upper()
+            held = {r[0] for r in conn.execute(
+                "SELECT ticker FROM watchlist_extra WHERE added_by = %s AND status = 'active'", (user,))}
+            if symbol not in held and len(held) >= limit:
+                return build_envelope(
+                    {"status": "watch_limit", "ticker": symbol, "limit": limit}, sources=["postgres"], as_of=now,
+                    warnings=[f"Bạn đã theo dõi tối đa {limit} mã; bỏ bớt bằng unwatch_ticker."],
+                )
         try:
             match = resolve_or_register_ticker(conn, VNStockProvider(source="VCI"), ticker)
         except UnknownTickerError as exc:

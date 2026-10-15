@@ -3,6 +3,7 @@ import json
 import pytest
 
 from db.connection import get_conn
+from mcp_server.tools import watchlist
 from mcp_server.tools.positions import clear_position_tool, set_position_tool
 from mcp_server.tools.watchlist import list_watchlist_tool, unwatch_ticker_tool, watch_ticker_tool
 from ops.scheduler import get_watchlist
@@ -110,3 +111,21 @@ def test_list_watchlist_shows_the_holders_label(as_user, tmp_path):
     bob = list_watchlist_tool()["data"]["items"][0]
     assert (alice["action_label"], alice["holding_state"]) == ("hold", "holding")
     assert (bob["action_label"], bob["holding_state"]) == ("watch", "unknown")
+
+
+def test_watch_limit_when_a_host_sets_one(as_user, monkeypatch):
+    monkeypatch.setattr(watchlist, "MAX_WATCHES_PER_USER", 1)
+    as_user("watchlimit")
+    assert watch_ticker_tool("WATCHTEST")["data"]["status"] == "ok"
+    assert watch_ticker_tool("WATCHTEST")["data"]["status"] == "ok"  # already held: not counted again
+    result = watch_ticker_tool("OTHER")
+
+    assert result["data"] == {"status": "watch_limit", "ticker": "OTHER", "limit": 1}
+    assert "tối đa 1 mã" in result["warnings"][0]
+    with get_conn() as conn:
+        assert conn.execute("SELECT count(*) FROM jobs WHERE ticker = 'OTHER'").fetchone()[0] == 0
+
+
+def test_no_limit_by_default(as_user):
+    as_user("123456")
+    assert watch_ticker_tool("WATCHTEST")["data"]["status"] == "ok"

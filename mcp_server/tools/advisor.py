@@ -21,7 +21,7 @@ from mcp_server.tools.stock_report import _load, verify_commentary
 from pipeline.stock_report import DISCLAIMER, _n, _pct
 
 ADVISOR_TITLE = "**Góc nhìn cố vấn**"
-_rejected: dict[str, int] = {}  # ponytail: per-process, like stock_report.REJECTED
+_rejected: dict[tuple[str, str], int] = {}  # ponytail: per-process, like stock_report.REJECTED
 STANCES = {True: ("hold", "reduce_exit"), False: ("buy_accumulate", "watch", "stay_out")}  # by holding
 _STANCE_VI = {"buy_accumulate": "tích lũy dần", "watch": "theo dõi, chưa giải ngân", "stay_out": "đứng ngoài",
               "hold": "tiếp tục nắm giữ", "reduce_exit": "giảm tỷ trọng"}
@@ -147,8 +147,8 @@ def save_advice_tool(ticker: str, run_id: str, stance: str, reasons: list[str], 
         issues.append("Thiếu phần: cần reasons, plan và risk, mỗi phần có nội dung.")
     issues += verify_commentary(" ".join(parts["reasons"] + parts["plan"] + [parts["risk"]]), text, stance)
     if issues:  # one fix allowed, then "dropped": the view is skipped silently
-        _rejected[run_id] = _rejected.get(run_id, 0) + 1
-        status = "rejected" if _rejected[run_id] < 2 else "dropped"
+        tries = _rejected[(user or "shared", run_id)] = _rejected.get((user or "shared", run_id), 0) + 1
+        status = "rejected" if tries < 2 else "dropped"
         return build_envelope({"status": status, "issues": issues}, sources=["postgres"], as_of=now)
     with get_rw_conn() as conn:
         conn.execute(
