@@ -11,6 +11,7 @@ name: ${COMPOSE_PROJECT_NAME:-vn-market-mcp}
 services:
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:16}
+    restart: ${RESTART_POLICY:-unless-stopped}  # back after a reboot or a Docker restart, like the other stacks
     environment:
       POSTGRES_USER: ${POSTGRES_ADMIN_USER:-vnmcp_admin}
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-changeme_local_only}
