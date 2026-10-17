@@ -3,9 +3,13 @@
 # mcp-venv-init service and the vn-market-mcp network/mount. Same project name as the original
 # checkout, so on this machine it manages the very same containers.
 #   cd infrastructure/hermes && docker compose up -d     (or: docker compose -f infrastructure/hermes/docker-compose.yml up -d)
-# Settings (HERMES_DATA_DIR, VN_MARKET_MCP_DIR, GATEWAY_PORT, DASHBOARD_PORT) come from infrastructure/hermes/.env,
-# see .env.example; the defaults below are the original single-host setup.
+# Settings (HERMES_IMAGE, HERMES_DATA_DIR, VN_MARKET_MCP_DIR, GATEWAY_PORT, DASHBOARD_PORT) come from
+# infrastructure/hermes/.env, see .env.example; the defaults below are the original single-host setup.
 name: hermes-docker-compose
+
+# Pinned by digest (Hermes Agent v0.21.5, 2026.9.24), not :latest: a recreate must never pull a new Hermes
+# by surprise (v0.21 started refusing the old dashboard flags). Upgrade on purpose: set HERMES_IMAGE in .env.
+x-hermes-image: &hermes-image ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db}
 
 services:
   # ---------------------------------------------------------------------------
@@ -14,7 +18,7 @@ services:
   # reproducible environment instead of a hand-built one. Exits when done.
   # ---------------------------------------------------------------------------
   mcp-venv-init:
-    image: nousresearch/hermes-agent:latest
+    image: *hermes-image
     container_name: hermes-mcp-venv-init
     entrypoint: ["/bin/sh", "/opt/vn-market-mcp/ops/setup_venv.sh"]
     volumes:
@@ -26,7 +30,7 @@ services:
   # Hermes Gateway — core agent runtime & API
   # ---------------------------------------------------------------------------
   gateway:
-    image: nousresearch/hermes-agent:latest
+    image: *hermes-image
     container_name: hermes-gateway
     command: gateway run
     restart: unless-stopped
@@ -53,18 +57,20 @@ services:
   # Hermes Dashboard — web UI for managing the agent
   # ---------------------------------------------------------------------------
   dashboard:
-    image: nousresearch/hermes-agent:latest
+    image: *hermes-image
     container_name: hermes-dashboard
-    command: dashboard --host 0.0.0.0 --insecure
+    # Hermes refuses a non-loopback bind without an auth provider (--insecure is a no-op since v0.21), so the
+    # dashboard listens on the host's loopback only: open it through an SSH or Tailscale tunnel to that port.
+    # Same data dir as the gateway, so it shows the real profiles, sessions and cron.
+    command: dashboard --host 127.0.0.1 --port ${DASHBOARD_PORT:-9120} --no-open
+    network_mode: host
     restart: unless-stopped
     depends_on:
       - gateway
-    ports:
-      - "${DASHBOARD_PORT:-9120}:9119"
+    volumes:
+      - ${HERMES_DATA_DIR:-${HOME:-/root}/.hermes}:/opt/data
     environment:
-      GATEWAY_HEALTH_URL: http://hermes-gateway:8642
-    networks:
-      - hermes-net
+      GATEWAY_HEALTH_URL: http://127.0.0.1:${GATEWAY_PORT:-8642}
 
   # ---------------------------------------------------------------------------
   # Watchtower (opt-in) — auto-update hermes containers
