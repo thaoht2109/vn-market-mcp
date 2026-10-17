@@ -64,12 +64,13 @@ def test_market_block_has_precomputed_ma_gaps(at, calendar):
 
 
 @pytest.mark.parametrize("day", [6, 10])  # holiday on a weekday, and a Saturday
-def test_digests_tell_hermes_to_stay_silent_when_not_a_trading_day(at, calendar, day):
+def test_digests_on_a_non_trading_day_give_the_latest_session_flagged(at, calendar, day):
     at(2026, 10, day)
     for tool in (get_market_digest_input_tool, get_weekly_digest_input_tool):
-        data = tool()["data"]
-        assert data["is_trading_day"] is False and "[SILENT]" in data["instruction"]
-        assert "market" not in data  # nothing to narrate, so no tokens spent reading it
+        out = tool()
+        assert out["data"]["is_trading_day"] is False  # the scheduled digests' prompts go [SILENT] on this
+        assert "market" in out["data"]  # a user asking on a weekend still gets the last session
+        assert any("không có phiên giao dịch" in w for w in out["warnings"])
 
 
 def test_unknown_calendar_fails_open(at):
