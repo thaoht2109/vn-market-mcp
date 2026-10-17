@@ -28,3 +28,17 @@ uv pip install --python "$VENV/bin/python" \
 
 echo "[setup_venv] done — verifying vnstock import:"
 "$VENV/bin/python" -c "from vnstock import Vnstock; print('vnstock import OK')"
+
+# Hermes plugins kept in this repo (.hermes/plugins/<name>/): refresh the copy in every profile's plugins dir,
+# so a rebuilt machine has them too. Enabling stays per profile (`hermes -p <profile> plugins enable <name>`).
+SRC=/opt/vn-market-mcp/.hermes/plugins
+if [ -d "$SRC" ]; then
+  for home in /opt/data /opt/data/profiles/*; do
+    [ -f "$home/config.yaml" ] || continue
+    for plugin in "$SRC"/*/; do
+      name=$(basename "$plugin")
+      rm -rf "$home/plugins/$name" && mkdir -p "$home/plugins/$name" && cp -R "$plugin"[!.]* "$home/plugins/$name/"  # no dotfiles
+      echo "[setup_venv] plugin $name -> $home/plugins/"
+    done
+  done
+fi
