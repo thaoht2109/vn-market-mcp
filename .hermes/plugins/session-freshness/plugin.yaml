@@ -1,0 +1,6 @@
+name: session-freshness
+version: 1.0.0
+description: "Start each day's chat in a fresh session: the first message after 04:00 (Asia/Ho_Chi_Minh) ends the previous day's session, so old instructions and history stop riding along."
+author: vn-market-mcp
+provides_hooks:
+  - pre_gateway_dispatch
