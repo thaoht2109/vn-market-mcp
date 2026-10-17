@@ -235,7 +235,8 @@ def save_advice(ticker: str, run_id: str, stance: str, reasons: list[str], plan:
 
 @mcp.tool()
 def get_market_digest_input() -> dict[str, Any]:
-    """Dữ kiện cho bản tin trước phiên: VN-Index, biến động VN30 phiên gần nhất, khối ngoại, tin qua đêm.
+    """Dữ kiện thị trường chung (bản tin trước phiên, "phân tích thị trường"): VN-Index, biến động VN30 phiên gần nhất,
+    khối ngoại, tin qua đêm. Ngày nghỉ: is_trading_day=false, số liệu là của phiên gần nhất (market.trade_date).
 
     market đã kèm pct_vs_ma20/50/200 (% giá so với từng đường MA) và pct_to_ma20 (% cần tăng để về MA20): dùng thẳng."""
     return get_market_digest_input_tool()
@@ -249,7 +250,7 @@ def get_weekly_digest_input() -> dict[str, Any]:
 
 @mcp.tool()
 def get_macro_context(days: int = 7) -> dict[str, Any]:
-    """Số liệu vĩ mô dạng số (`indicators`, mỗi chỉ tiêu có `label` và tối đa 10 kỳ gần nhất kèm `period`):
+    """Số liệu vĩ mô dạng số (`indicators`, mỗi chỉ tiêu có `label` và tối đa 6 kỳ gần nhất kèm `period`):
     NHNN (tỷ giá trung tâm/tham khảo USD, lãi suất điều hành, liên ngân hàng), NSO (GDP quý, CPI, lạm phát cơ bản,
     FDI đăng ký/thực hiện), giá hàng hóa (vàng, dầu Brent/WTI, đồng, quặng sắt, thép HRC, vàng SJC); và tin vĩ mô đã lọc theo 7 trụ cột (tiền tệ, tỷ giá, tăng trưởng, lạm phát, tài khóa, thị trường vốn, toàn cầu)
     trong N ngày (1-30), kèm độ mới của từng nguồn tin. Nguồn quá hạn có cảnh báo: không có tin ≠ không có sự kiện.

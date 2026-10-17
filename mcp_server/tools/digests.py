@@ -14,7 +14,10 @@ from pipeline.news import load_sources
 from pipeline.news_health import news_sources_status, source_warnings
 
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-_SILENT = {"is_trading_day": False, "instruction": "Hôm nay không phải ngày giao dịch: trả lời đúng một chuỗi [SILENT], không viết gì thêm."}
+# On a non-trading day the digests still carry the latest session's data (a user asking on a weekend gets an answer),
+# flagged is_trading_day=false: the scheduled digest prompts turn that flag into [SILENT].
+_OFF_DAY = ("Hôm nay không có phiên giao dịch: mọi số liệu là của phiên gần nhất (market.trade_date), "
+            "nói rõ điều đó, không gọi là số của hôm nay")
 
 _VN30 = (
     "SELECT ticker FROM index_membership WHERE index_code = 'VN30'"
@@ -118,7 +121,7 @@ def _skip_today(conn, now: datetime) -> bool:
 
 
 def _data_warnings(data: dict) -> list[str]:
-    out = []
+    out = [] if data.get("is_trading_day", True) else [_OFF_DAY]
     m = data.get("market")
     if m and m.get("provisional"):
         out.append(f"VN-Index phiên {m['trade_date']} là số tạm tính giữa phiên, chưa phải giá đóng cửa: "
@@ -133,12 +136,11 @@ def _data_warnings(data: dict) -> list[str]:
 def get_market_digest_input_tool() -> dict:
     now = datetime.now(timezone.utc)
     with get_ro_conn() as conn:
-        if _skip_today(conn, now):
-            return build_envelope(dict(_SILENT), sources=["postgres"], as_of=now)
+        trading = not _skip_today(conn, now)
         moves = _moves(conn, 1)
         status = news_sources_status(conn, now, [s["name"] for s in load_sources()])
         data = {
-            "is_trading_day": True, "market": _market(conn), "vn30_last_session": {"gainers": moves[:3], "losers": moves[::-1][:3],
+            "is_trading_day": trading, "market": _market(conn), "vn30_last_session": {"gainers": moves[:3], "losers": moves[::-1][:3],
                                                           "advancing": sum(m["change_pct"] > 0 for m in moves),
                                                           "declining": sum(m["change_pct"] < 0 for m in moves)},
             "foreign_flow": _flow(conn, 1), "overnight_headlines": _headlines(conn, 18, 30),
@@ -150,14 +152,13 @@ def get_market_digest_input_tool() -> dict:
 def get_weekly_digest_input_tool() -> dict:
     now = datetime.now(timezone.utc)
     with get_ro_conn() as conn:
-        if _skip_today(conn, now):
-            return build_envelope(dict(_SILENT), sources=["postgres"], as_of=now)
+        trading = not _skip_today(conn, now)
         moves = _moves(conn, 5)
         labels = dict(conn.execute(
             f"SELECT action_label, count(DISTINCT ticker) FROM predictions WHERE status = 'open' AND ticker IN ({_VN30})"
             " GROUP BY 1").fetchall())
         data = {
-            "is_trading_day": True, "market": _market(conn),
+            "is_trading_day": trading, "market": _market(conn),
             "vn30_week": {"gainers": moves[:5], "losers": moves[::-1][:5],
                           "advancing": sum(m["change_pct"] > 0 for m in moves),
                           "declining": sum(m["change_pct"] < 0 for m in moves), "stocks": len(moves)},

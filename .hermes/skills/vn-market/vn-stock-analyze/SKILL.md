@@ -75,9 +75,9 @@ Vị thế (`set_position`/`clear_position`) và danh sách theo dõi (`watch_ti
 | "tìm/lọc/quét các mã có <tiêu chí>", "mã nào đang <tiêu chí>", "cổ phiếu có nến/RSI/MA… ", "top mã …" | mục "Quét nhiều mã" bên dưới — KHÔNG `analyze_stock` từng mã |
 | "các dự báo còn mở", "dự báo <mã>" | `list_predictions(ticker, status)` (nhãn chung, không theo vị thế) |
 | `/trangthai`, "thống kê", "hit-rate" | `get_stats()` |
-| "thị trường hôm nay", "bản tin sáng", "VN-Index ra sao" | `get_market_digest_input()` |
+| "thị trường hôm nay", "phân tích thị trường", "thị trường thế nào/ra sao", "bản tin sáng", "VN-Index ra sao" | `get_market_digest_input()`; câu "phân tích" thì thêm `get_macro_context(days=7)`. Bản tin đã có VN-Index, độ rộng VN30, mã tăng/giảm mạnh, khối ngoại: không dựng lại bằng `screen_tickers`, `query_history` hay chạy code |
 | "tin vĩ mô", "lãi suất", "tỷ giá", "chính sách tiền tệ", "GDP", "CPI", "lạm phát", "FDI", "giá vàng", "giá dầu", "giá hàng hóa", "tin kinh tế tuần này" | `get_macro_context(days=7)` |
-| "tổng kết tuần", "bản tin tuần" | `get_weekly_digest_input()` |
+| "tổng kết tuần", "bản tin tuần", "thị trường tuần này" | `get_weekly_digest_input()` |
 | `/theodoi <mã>`, "theo dõi <mã>", "thêm <mã> vào danh sách" | `watch_ticker(ticker)`, rồi `analyze_stock(ticker, job_id)` |
 | `/bodoi <mã>`, "bỏ theo dõi <mã>" | `unwatch_ticker(ticker)` |
 | `/danhsach`, "danh sách theo dõi", "các mã tôi theo dõi hôm nay thế nào" | `list_watchlist()`; mã chưa có nhãn → "chưa có nhận định", gọi `get_snapshot(ticker)` nếu họ hỏi lý do |
@@ -117,6 +117,7 @@ Server tự chạy, chờ job, dựng báo cáo, ghép câu trả lời và đ�
 ## Đọc kết quả (nội bộ — không nói tên trường với người dùng)
 
 - **Không kiểm toán lại dữ liệu mặc định.** Pipeline tự kiểm tra bằng code mỗi lần chạy (đơn vị giá trên toàn chuỗi, độ mới của báo cáo tài chính, độ mới của giá). Chỉ đào sâu (`query_history`) khi `warnings` có cảnh báo chất lượng dữ liệu hoặc một số rõ ràng vô lý. Dấu hiệu vô lý: biên độ dao động bình quân lớn hơn biên độ sàn (HOSE 7%, HNX 10%, UPCoM 15%) là lỗi dữ liệu chứ không phải biến động; khối ngoại ròng lớn hơn cả giá trị khớp lệnh phiên có thể là giao dịch thỏa thuận hoặc lỗi dữ liệu — tool đã tự đánh dấu (`within_matched_value=false` trong `query_history`, `left_out` trong bản tin, dòng "vượt giá trị khớp lệnh" trong báo cáo) và không cộng vào tổng: nhắc tới thì nói rõ như vậy, không dùng để kết luận xu hướng dòng tiền. Khi đó nói thẳng số nào không dùng được.
+- **Ngày nghỉ** (`is_trading_day=false` ở bản tin): số liệu là của phiên gần nhất (`market.trade_date`). Trả lời bằng số đó và nói rõ hôm nay không có phiên; không tìm thêm bằng tool khác.
 - **Số tạm tính**: `market.provisional=true` trong bản tin, `provisional=true` ở `screen_tickers`, hoặc báo cáo ghi "giá tạm tính" nghĩa là số giữa phiên (kể cả giờ nghỉ trưa), chưa phải giá đóng cửa: luôn ghi "tạm tính", không gọi là giá chốt, không so khối lượng trong phiên với bình quân cả phiên.
 - **Độ phủ điểm**: điểm tổng hợp chính thức gồm kỹ thuật, định giá cơ bản, dòng tiền và vĩ mô (lãi suất liên ngân hàng, CPI, GDP, tỷ giá, độ rộng VN30 — không gồm VN-Index so với MA200); tin tức không có trong điểm chính thức. Báo cáo ghi rõ yếu tố nào còn thiếu. Dòng "điểm tham khảo" tính thêm tin tức theo đánh giá của trợ lý: chỉ để tham khảo, không đổi nhãn, không được trình bày như kết luận chính thức.
 - **Dữ liệu chưa cập nhật** (cảnh báo độ mới): độ tin cậy giảm một nửa và nhãn bị đưa về mức thận trọng nhất trước khi xét điểm. Nói rõ đây là vấn đề dữ liệu chưa về, không phải tín hiệu xấu của cổ phiếu; tự hết khi dữ liệu phiên được nạp. Thường gặp khi hỏi trước giờ mở cửa hoặc trong phiên.

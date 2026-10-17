@@ -12,8 +12,8 @@ from pipeline.news_filter import load_keywords
 from pipeline.news_health import news_sources_status, source_warnings
 
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-PER_PILLAR = 10
-INDICATOR_HISTORY = 10   # latest N periods per indicator, enough to read a short trend
+PER_PILLAR = 6  # keeps the whole result under Hermes' 50k-char MCP spill limit (was 58k at 10)
+INDICATOR_HISTORY = 6    # latest N periods per indicator, enough to read a short trend
 LABELS = {
     "usd_vnd_central": "Tỷ giá trung tâm USD/VND (NHNN, theo ngày)",
     "usd_vnd_ref_buy": "Tỷ giá tham khảo mua USD tại Sở giao dịch NHNN",
@@ -61,13 +61,13 @@ def get_macro_context_tool(days: int = 7) -> dict:
         by_pillar = {}
         for p in pillars:
             rows = conn.execute(
-                "SELECT published_at, title, source, url FROM news_items"
+                "SELECT published_at, title, source FROM news_items"
                 " WHERE filter_status = 'kept' AND %s = ANY(pillars)"
                 " AND published_at >= now() - make_interval(days => %s) ORDER BY published_at DESC LIMIT %s",
                 (p, days, PER_PILLAR),
             ).fetchall()
             by_pillar[p] = [{"date": at.astimezone(_VN_TZ).strftime("%d/%m %H:%M"), "title": title,
-                             "source": source, "url": url} for at, title, source, url in rows]
+                             "source": source} for at, title, source in rows]
         status = news_sources_status(conn, now, [s["name"] for s in load_sources()])
         indicators = _indicators(conn)
     warnings = source_warnings(status) + _indicator_warnings(indicators, now)
@@ -77,15 +77,15 @@ def get_macro_context_tool(days: int = 7) -> dict:
 
 def _indicators(conn) -> dict:
     rows = conn.execute(
-        "SELECT indicator, period, value, unit, source, source_url FROM ("
+        "SELECT indicator, period, value, unit, source FROM ("
         " SELECT *, row_number() OVER (PARTITION BY indicator ORDER BY period DESC) AS n FROM macro_indicators) t"
         " WHERE n <= %s ORDER BY indicator, period DESC",
         (INDICATOR_HISTORY,),
     ).fetchall()
     out: dict = {}
-    for indicator, period, value, unit, source, url in rows:
+    for indicator, period, value, unit, source in rows:
         entry = out.setdefault(indicator, {"label": LABELS.get(indicator, indicator), "unit": unit, "source": source,
-                                           "source_url": url, "series": []})
+                                           "series": []})
         entry["series"].append({"period": period.isoformat(), "value": float(value)})
     for entry in out.values():
         series = entry["series"]
