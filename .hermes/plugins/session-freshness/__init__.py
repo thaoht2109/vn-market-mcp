@@ -1,12 +1,14 @@
 """session-freshness: a fresh chat session every day.
 
-Hermes never ends a routed conversation on time (session_reset in config.yaml is inert since v0.21); only a
-suspended session is replaced on its next message. So before each inbound message, if the session was last
-active before the most recent 04:00 Vietnam time, suspend it: Hermes then starts a new one for this very
-message (with its usual continuity hint), the same path /stop uses. Commands (/new, /stop...) pass untouched.
+Hermes never ends a routed conversation on time (session_reset in config.yaml is inert since v0.21). So before
+each inbound message, if the session was last active before the most recent 04:00 Vietnam time, start a new one
+the way /new does (drop the cached agent and the conversation-scoped state, then reset_session), and the message
+goes to it. Not via suspend_session (the /stop path): that one sends the user "Session reset after being stopped"
+every morning. Commands (/new, /stop...) pass untouched.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -28,15 +30,20 @@ def should_reset(updated_at: datetime, now: datetime) -> bool:
     return updated < cut
 
 
-def _on_dispatch(event=None, gateway=None, session_store=None, **_):
+async def _on_dispatch(event=None, gateway=None, session_store=None, **_):
     try:
         if not (event and gateway and session_store and event.source) or (event.text or "").startswith("/"):
             return None
         key = gateway._session_key_for_source(event.source)
         entry = session_store.lookup_by_session_key(key)
-        if entry and entry.updated_at and should_reset(entry.updated_at, datetime.now()):
-            session_store.suspend_session(key)
-            logger.info("session-freshness: new day, suspended %s (last active %s)", key, entry.updated_at)
+        if not (entry and entry.updated_at and should_reset(entry.updated_at, datetime.now())):
+            return None
+        # ponytail: the idle part of /new's reset (gateway/slash_commands_session.py::_handle_reset_command);
+        # a session quiet since before 04:00 has no run in flight to interrupt. Recheck after a Hermes upgrade.
+        gateway._evict_cached_agent(key)
+        gateway._clear_conversation_scope(key, reason="session_reset")
+        await asyncio.to_thread(session_store.reset_session, key)
+        logger.info("session-freshness: new day, new session for %s (last active %s)", key, entry.updated_at)
     except Exception:  # never block a message over this
         logger.exception("session-freshness: check failed, message dispatched as usual")
     return None
