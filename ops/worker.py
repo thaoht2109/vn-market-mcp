@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 import time
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 
 from llm.client import LLMCallError
 from llm.config import ModelsConfig
@@ -28,7 +27,6 @@ from pipeline.price_alerts import check_close, check_intraday
 from pipeline.run_analysis import run_analysis
 from providers.vnstock_provider import VNStockProvider
 
-SNAPSHOT_DIR = Path("snapshots")
 POLL_INTERVAL_S = 5
 RATE_LIMIT_BACKOFF_S = 65
 # Rate-limited this many times = something keeps blowing the budget: fail and tell ops instead of
@@ -125,7 +123,7 @@ def run_one(conn) -> bool:
             log_event("worker_job_finished", job_key=job.job_key, ticker=job.ticker, status="ok")
             return True
         result = run_analysis(
-            conn, VNStockProvider(source="VCI"), job.ticker, SNAPSHOT_DIR,
+            conn, VNStockProvider(source="VCI"), job.ticker,
             mode=job.job_type, style=job.style, depth=job.depth,
         )
     except BaseException as exc:  # vnstock rate-limit exits raise SystemExit, not Exception
@@ -153,7 +151,7 @@ def run_one(conn) -> bool:
         release(conn, job)
         log_event("worker_job_finished", job_key=job.job_key, ticker=job.ticker, status=result.status)
         # No Telegram message: Hermes polls get_job_status and answers in the user's own chat
-        # (run_analysis and watch_ticker alike); results stay in the DB/snapshots for later reads.
+        # (run_analysis and watch_ticker alike); results stay in the DB for later reads.
     else:
         mark_failed(conn, job, f"{result.status}: {result.message}")
         release(conn, job)

@@ -30,11 +30,6 @@ services:
     # here, so Compose can scale this service freely.
     deploy:
       replicas: ${WORKER_REPLICAS:-2}
-    # Bind-mounted (not a named volume) so snapshot files land on the host at SNAPSHOTS_DIR — the
-    # SAME host path the Hermes gateway bind-mounts read-only as /opt/vn-market-mcp, which is how
-    # mcp_server's get_snapshot tool reads a run_analysis snapshot_ref.
-    volumes:
-      - ${SNAPSHOTS_DIR:-../../snapshots}:/app/snapshots
     environment:
       PIPELINE_RW_DATABASE_URL: postgresql://pipeline_rw:${PIPELINE_RW_PASSWORD:?set PIPELINE_RW_PASSWORD in infrastructure/pipeline/.env}@${DB_HOST:-127.0.0.1}:${DB_PORT:-55432}/${DB_NAME:-vnmcp}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}

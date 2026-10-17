@@ -147,7 +147,7 @@ for d in db pipeline hermes; do cp infrastructure/$d/.env.example infrastructure
 
 `.env` gốc có `COMPOSE_FILE=infrastructure/db/docker-compose.yml`, nên `docker compose ... postgres` chạy được từ thư mục gốc; lệnh cho pipeline viết đủ `-f infrastructure/pipeline/docker-compose.yml`. Compose lấy biến từ `.env` trong thư mục chứa file compose; các mật khẩu role ở `.env` gốc và `infrastructure/pipeline/.env` phải trùng nhau. Pipeline nối Postgres như một client qua `DB_HOST:DB_PORT` (host networking), không qua network Compose.
 
-Khi chuyển sang máy khác, chỉ cần sửa các `infrastructure/<loại>/.env`: `db/.env` có `POSTGRES_PUBLISH_PORT`/`POSTGRES_PUBLISH_BIND` (cổng trên host, khớp với `localhost:<cổng>` trong các URL ở `.env` gốc), `pipeline/.env` có `DB_HOST`/`DB_PORT` (khớp cổng publish), `SNAPSHOTS_DIR` (thư mục snapshot, phải trùng với thư mục Hermes gateway mount), `WORKER_REPLICAS`, image. Giữ `COMPOSE_PROJECT_NAME=vn-market-mcp` trừ khi đổi luôn tên mạng `<tên>_default` bên Hermes; đổi tên này cũng tạo volume DB mới (`<tên>_pgdata`).
+Khi chuyển sang máy khác, chỉ cần sửa các `infrastructure/<loại>/.env`: `db/.env` có `POSTGRES_PUBLISH_PORT`/`POSTGRES_PUBLISH_BIND` (cổng trên host, khớp với `localhost:<cổng>` trong các URL ở `.env` gốc), `pipeline/.env` có `DB_HOST`/`DB_PORT` (khớp cổng publish), `WORKER_REPLICAS`, image. Giữ `COMPOSE_PROJECT_NAME=vn-market-mcp` trừ khi đổi luôn tên mạng `<tên>_default` bên Hermes; đổi tên này cũng tạo volume DB mới (`<tên>_pgdata`).
 
 Điền các biến `MCP_RO_PASSWORD`, `PIPELINE_RW_PASSWORD`, `RETENTION_JOB_PASSWORD`, `*_DATABASE_URL`, `VNSTOCK_API_KEY`, `TELEGRAM_BOT_TOKEN` và `TELEGRAM_ALERT_CHAT_ID`.
 
@@ -202,9 +202,9 @@ Các bước pipeline thực hiện:
 4. Kiểm tra độ phủ dữ liệu.
 5. Tính chỉ báo và điểm.
 6. Gán nhãn và lập kế hoạch rủi ro.
-7. Ghi kết quả vào `runs` (cột `snapshot`, jsonb) và `predictions`. Vẫn ghi thêm `snapshots/<run_id>.json` trong giai đoạn chuyển tiếp; đọc ưu tiên cột, cột trống thì đọc file.
+7. Ghi kết quả vào `runs` (cột `snapshot`, jsonb) và `predictions`. Không còn file `snapshots/<run_id>.json`; snapshot nằm trong `pg_dump`, nên restore từ bản dump là đủ.
 
-Run từ trước migration `026` chưa có cột `snapshot`: nạp một lần bằng `python -m ops.backfill_snapshots` (chạy lại được; in ra run có file thiếu hoặc hỏng). Cột nằm trong `pg_dump` còn thư mục `snapshots/` thì không, nên sau khi nạp xong, restore chỉ từ bản dump vẫn đủ.
+DB có run từ trước migration `026` (còn file `snapshots/`): trước khi cập nhật lên bản này, chạy migration rồi `python -m ops.backfill_snapshots` một lần (chạy lại được; in ra run có file thiếu hoặc hỏng). Run nào không có snapshot thì `get_snapshot` trả `snapshot_file_missing`.
 
 Tin nhắn Telegram do worker gửi (`ops/worker.py`, `ops/alerting.py`):
 

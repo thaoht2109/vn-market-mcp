@@ -1,5 +1,6 @@
-import json
 from datetime import date, datetime, timedelta, timezone
+
+from psycopg.types.json import Jsonb
 
 from ops.pending_alerts import FOOTER, render, take_pending
 from pipeline.price_alerts import CONFIRMED, TOUCHED, evaluate, message, set_alerts, step
@@ -40,20 +41,19 @@ def test_render_is_empty_without_alerts_so_hermes_sends_nothing():
 
 def _setup(conn, tmp_path, label="watch"):
     insert_ticker(conn, "ALRT")
-    snap = tmp_path / "scheduled_post_ALRT.json"
-    snap.write_text(json.dumps({
+    snap = {
         "action_label": label,
         "risk_plan": {"entry_zone": [60000, 62000], "stop_loss": 58000, "target": 70000},
-    }))
+    }
     conn.execute(
         "INSERT INTO prices_daily (ticker, trade_date, open, high, low, close, volume, value, source, fetched_at)"
         " VALUES ('ALRT', %s, 64000, 64000, 64000, 64000, 1000, 0, 'test', now())",
         (SESSION - timedelta(days=1),),
     )
     conn.execute(
-        "INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings)"
+        "INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot, warnings)"
         " VALUES ('scheduled_post:ALRT:1', 'scheduled_post', ARRAY['ALRT'], 'long', 'full', %s, %s, '[]')",
-        (datetime(2026, 9, 2, 8, 20, tzinfo=timezone.utc), str(snap)),
+        (datetime(2026, 9, 2, 8, 20, tzinfo=timezone.utc), Jsonb(snap)),
     )
     conn.execute(
         "INSERT INTO watchlist_extra (ticker, added_by, confirmed_at, status) VALUES ('ALRT', 'u1', now(), 'active')"

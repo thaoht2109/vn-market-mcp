@@ -1,25 +1,23 @@
 import json
-from pathlib import Path
 
 import pytest
+from psycopg.types.json import Jsonb
 
 from db.connection import get_conn
 from mcp_server.tools.snapshot import get_snapshot_tool
 
 
 @pytest.fixture
-def seeded_run(tmp_path):
-    snapshot_path = tmp_path / "test_run.json"
-    snapshot_path.write_text(json.dumps({"ticker": "VNMTEST", "action_label": "watch"}))
+def seeded_run():
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings)
+            INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot, warnings)
             VALUES ('test:VNMTEST:1', 'on_demand', ARRAY['VNMTEST'], 'long', 'quick', now(), %s, '[]')
             """,
-            (str(snapshot_path),),
+            (Jsonb({"ticker": "VNMTEST", "action_label": "watch"}),),
         )
-    yield "test:VNMTEST:1", str(snapshot_path)
+    yield "test:VNMTEST:1", None
     with get_conn() as conn:
         conn.execute("DELETE FROM runs WHERE run_id = 'test:VNMTEST:1'")
 
@@ -51,7 +49,6 @@ def test_get_snapshot_requires_exactly_one_arg():
 
 
 def _insert_run(conn, run_id, ref, snapshot=None):
-    from psycopg.types.json import Jsonb
     conn.execute(
         "INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings, snapshot)"
         " VALUES (%s, 'on_demand', ARRAY['SNAPCOL'], 'long', 'quick', now(), %s, '[]', %s)",
@@ -69,7 +66,7 @@ def test_stored_snapshot_wins_and_needs_no_file():
             conn.execute("DELETE FROM runs WHERE run_id = 'snapcol:1'")
 
 
-def test_no_column_and_no_file_is_snapshot_file_missing():
+def test_run_without_a_stored_snapshot_is_snapshot_file_missing():
     with get_conn() as conn:
         _insert_run(conn, "snapcol:2", "snapshots/does-not-exist.json")
     try:
@@ -102,3 +99,17 @@ def test_backfill_loads_files_once_and_lists_the_missing(tmp_path):
 def test_serialize_snapshot_turns_nan_into_null():
     from pipeline.snapshot import serialize_snapshot
     assert serialize_snapshot({"a": float("nan"), "b": [float("inf"), 1.5]}) == {"a": None, "b": [None, 1.5]}
+
+
+def test_serialize_snapshot_handles_dataclasses_and_dates():
+    from datetime import datetime, timezone
+    from pipeline.indicators import TechnicalSnapshot
+    from pipeline.snapshot import serialize_snapshot
+    tech = TechnicalSnapshot(
+        trend="up", ma20=1.0, ma50=1.0, ma200=None, rsi14=55.0, macd=0.1, macd_signal=0.05,
+        bollinger_upper=2.0, bollinger_lower=0.5, atr14=0.2, support=[1.0], resistance=[2.0],
+        volume_avg20=1000.0, volume_anomaly=False,
+    )
+    data = serialize_snapshot({"ticker": "VNM", "as_of": datetime.now(timezone.utc), "technical": tech})
+    json.dumps(data)  # plain JSON types only: what the jsonb column takes
+    assert data["technical"]["trend"] == "up" and isinstance(data["as_of"], str)

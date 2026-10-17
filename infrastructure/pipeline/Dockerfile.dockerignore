@@ -11,7 +11,7 @@
 .pytest_cache
 __pycache__
 *.pyc
-# bind-mounted at runtime (worker: ${SNAPSHOTS_DIR}:/app/snapshots)
+# old snapshot files (a run's snapshot lives in Postgres now), local backups
 snapshots
 backups
 # not needed at runtime: tests run from the host (run_tests.sh), docs are for people

@@ -39,7 +39,7 @@ from pipeline.risk_plan import RiskPlanConfig, risk_plan
 from pipeline.scoring import (
     agreement_ratio, composite_score, confidence, flow_score, percentile_score, technical_score,
 )
-from pipeline.snapshot import serialize_snapshot, write_snapshot
+from pipeline.snapshot import serialize_snapshot
 from psycopg.types.json import Jsonb
 from providers.vnstock_provider import FundamentalRecord
 from quality.checks import (
@@ -140,7 +140,6 @@ def run_analysis(
     conn: psycopg.Connection,
     provider,
     ticker_raw: str,
-    snapshot_dir: Path,
     mode: str = "on_demand",
     style: str = "long",
     depth: str = "quick",
@@ -255,14 +254,12 @@ def run_analysis(
     }
 
     if not coverage_result.sufficient:
-        snapshot_ref = write_snapshot(snapshot_dir, run_id, snapshot)
         conn.execute(
             """
-            INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings, snapshot)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, warnings, snapshot)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (run_id, mode, [ticker], style, depth, now, snapshot_ref, json.dumps(warnings),
-             Jsonb(serialize_snapshot(snapshot))),
+            (run_id, mode, [ticker], style, depth, now, json.dumps(warnings), Jsonb(serialize_snapshot(snapshot))),
         )
         return RunResult(
             run_id=run_id, status="insufficient_coverage", ticker=ticker, action_label=None,
@@ -411,19 +408,16 @@ def run_analysis(
     snapshot["action_label"] = label
     snapshot["data_stale"] = data_stale
 
-    snapshot_ref = write_snapshot(snapshot_dir, run_id, snapshot)
-
     # runs must exist before Synthesis runs, since llm_calls.run_id has a FK
     # to runs(run_id) — label/snapshot/warnings below may still change if
-    # Synthesis recommends a downgrade, so this row (and the snapshot file)
+    # Synthesis recommends a downgrade, so this row (and its snapshot)
     # gets overwritten after that block, not re-inserted.
     conn.execute(
         """
-        INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings, snapshot)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, warnings, snapshot)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (run_id, mode, [ticker], style, depth, now, snapshot_ref, json.dumps(warnings),
-         Jsonb(serialize_snapshot(snapshot))),
+        (run_id, mode, [ticker], style, depth, now, json.dumps(warnings), Jsonb(serialize_snapshot(snapshot))),
     )
 
     # Once a day is enough for headlines (post = the session); weekly runs minutes after post.
@@ -501,8 +495,7 @@ def run_analysis(
 
         # Persist unconditionally: news/debate may have succeeded even if
         # Synthesis above failed, and must not be silently dropped from the
-        # snapshot file just because the last role in the chain errored.
-        write_snapshot(snapshot_dir, run_id, snapshot)
+        # snapshot just because the last role in the chain errored.
         conn.execute("UPDATE runs SET warnings = %s, snapshot = %s WHERE run_id = %s",
                      (json.dumps(warnings), Jsonb(serialize_snapshot(snapshot)), run_id))
 
@@ -522,14 +515,14 @@ def run_analysis(
     )
 
 
-def _run_with_retry(get_conn_fn, provider, ticker: str, snapshot_dir: Path, style: str, depth: str) -> RunResult:
+def _run_with_retry(get_conn_fn, provider, ticker: str, style: str, depth: str) -> RunResult:
     """Transient connection failures (e.g. the host DB port briefly
     unreachable while a container is being recreated) shouldn't page ops on
     their own — retry a couple times before giving up."""
     for attempt in range(3):
         try:
             with get_conn_fn() as conn:
-                return run_analysis(conn, provider, ticker, snapshot_dir, style=style, depth=depth)
+                return run_analysis(conn, provider, ticker, style=style, depth=depth)
         except psycopg.OperationalError:
             if attempt == 2:
                 raise
@@ -553,7 +546,7 @@ if __name__ == "__main__":
     log_event("run_started", ticker=args.ticker, style=args.style, depth=args.depth)
     try:
         result = _run_with_retry(
-            get_conn, VNStockProvider(source="VCI"), args.ticker, Path("snapshots"), args.style, args.depth,
+            get_conn, VNStockProvider(source="VCI"), args.ticker, args.style, args.depth,
         )
         if result.status == "ok":
             log_event("run_finished", ticker=args.ticker, status=result.status, action_label=result.action_label)
