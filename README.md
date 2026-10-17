@@ -72,7 +72,7 @@ Tài liệu thiết kế: [`docs/design/vn-trading-agent-plan_final.md`](docs/de
                                      │
         ingest → quality checks → indicators → scoring → action label → risk plan
                                      │
-                 Postgres (runs, predictions, prices…) + snapshots/*.json
+                 Postgres (runs + snapshot, predictions, prices…)
                                      │
          MCP server (stdio, mỗi Hermes profile một tiến trình, VNMCP_USER_ID)
                                      │
@@ -202,7 +202,9 @@ Các bước pipeline thực hiện:
 4. Kiểm tra độ phủ dữ liệu.
 5. Tính chỉ báo và điểm.
 6. Gán nhãn và lập kế hoạch rủi ro.
-7. Ghi kết quả vào `runs`/`predictions` và `snapshots/<run_id>.json`.
+7. Ghi kết quả vào `runs` (cột `snapshot`, jsonb) và `predictions`. Vẫn ghi thêm `snapshots/<run_id>.json` trong giai đoạn chuyển tiếp; đọc ưu tiên cột, cột trống thì đọc file.
+
+Run từ trước migration `026` chưa có cột `snapshot`: nạp một lần bằng `python -m ops.backfill_snapshots` (chạy lại được; in ra run có file thiếu hoặc hỏng). Cột nằm trong `pg_dump` còn thư mục `snapshots/` thì không, nên sau khi nạp xong, restore chỉ từ bản dump vẫn đủ.
 
 Tin nhắn Telegram do worker gửi (`ops/worker.py`, `ops/alerting.py`):
 

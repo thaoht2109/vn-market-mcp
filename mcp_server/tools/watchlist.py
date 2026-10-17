@@ -3,9 +3,7 @@ daily/intraday runs (ops.scheduler.get_watchlist), so any listed ticker gets the
 treatment as a VN30 member once someone watches it."""
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 from mcp_server.connection import get_ro_conn, get_rw_conn
 from mcp_server.envelope import build_envelope
@@ -13,6 +11,7 @@ from mcp_server.identity import no_personal_scope, pinned_user
 from pipeline.coverage import UnknownTickerError, classify_universe_tier, resolve_or_register_ticker
 from pipeline.jobs import enqueue
 from pipeline.positions import personalize
+from pipeline.snapshot import load_snapshot
 from providers.vnstock_provider import VNStockProvider
 
 
@@ -96,7 +95,7 @@ def list_watchlist_tool() -> dict:
     with get_ro_conn() as conn:
         rows = conn.execute(
             """
-            SELECT w.ticker, t.name, t.exchange, p.action_label, p.confidence, p.created_at, r.snapshot_ref
+            SELECT w.ticker, t.name, t.exchange, p.action_label, p.confidence, p.created_at, r.snapshot_ref, r.snapshot
             FROM watchlist_extra w
             JOIN tickers t USING (ticker)
             LEFT JOIN LATERAL (
@@ -109,10 +108,10 @@ def list_watchlist_tool() -> dict:
             """,
             (user,),
         ).fetchall()
-        for ticker, name, exchange, label, conf, label_at, snapshot_ref in rows:
+        for ticker, name, exchange, label, conf, label_at, snapshot_ref, stored in rows:
             snapshot = {"action_label": label}
-            if snapshot_ref and Path(snapshot_ref).exists():
-                snapshot = {**json.loads(Path(snapshot_ref).read_text()), "action_label": label}
+            if (full := load_snapshot(stored, snapshot_ref)) is not None:
+                snapshot = {**full, "action_label": label}
             view = personalize(conn, snapshot, ticker, user)
             items.append({
                 "ticker": ticker, "name": name, "exchange": exchange, "action_label": view["action_label"],

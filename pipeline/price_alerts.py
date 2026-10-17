@@ -16,7 +16,6 @@ printed verbatim to each user's chat by their Hermes cron (ops/pending_alerts.py
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
@@ -26,6 +25,7 @@ import psycopg
 import yaml
 
 from pipeline.action_label import DEFENSIVE_LABELS
+from pipeline.snapshot import load_snapshot
 from pipeline.stock_report import _STANCE, _n
 
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -67,16 +67,15 @@ class Levels:
 def official_levels(conn: psycopg.Connection, ticker: str, session_date: date) -> Levels | None:
     opens_at = datetime.combine(session_date, time(9, 0), _VN_TZ)
     row = conn.execute(
-        "SELECT run_id, snapshot_ref, as_of FROM runs WHERE mode = 'scheduled_post' AND %s = ANY(tickers)"
+        "SELECT run_id, snapshot_ref, as_of, snapshot FROM runs WHERE mode = 'scheduled_post' AND %s = ANY(tickers)"
         " AND as_of < %s ORDER BY as_of DESC LIMIT 1",
         (ticker, opens_at),
     ).fetchone()
     if row is None:
         return None
-    run_id, snapshot_ref, as_of = row
-    try:
-        snapshot = json.loads(Path(snapshot_ref).read_text())
-    except (OSError, ValueError):
+    run_id, snapshot_ref, as_of, stored = row
+    snapshot = load_snapshot(stored, snapshot_ref)
+    if snapshot is None:
         return None
     plan = snapshot.get("risk_plan")
     if not plan:  # insufficient coverage: no levels to watch

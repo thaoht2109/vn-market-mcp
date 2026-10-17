@@ -129,6 +129,8 @@ def test_run_analysis_happy_path_writes_run_and_prediction(db_conn, tmp_path):
     run_row = db_conn.execute("SELECT snapshot_ref FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()
     assert run_row is not None
     assert Path(run_row[0]).exists()
+    stored = db_conn.execute("SELECT snapshot FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
+    assert stored == json.loads(Path(run_row[0]).read_text())  # the column holds what the file does
 
     prediction_row = db_conn.execute(
         "SELECT action_label, status, horizon_days FROM predictions WHERE ticker = 'VNMTEST'"
