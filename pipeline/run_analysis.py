@@ -40,6 +40,7 @@ from pipeline.scoring import (
     agreement_ratio, composite_score, confidence, flow_score, percentile_score, technical_score,
 )
 from pipeline.snapshot import serialize_snapshot, write_snapshot
+from psycopg.types.json import Jsonb
 from providers.vnstock_provider import FundamentalRecord
 from quality.checks import (
     check_abnormal_move,
@@ -257,10 +258,11 @@ def run_analysis(
         snapshot_ref = write_snapshot(snapshot_dir, run_id, snapshot)
         conn.execute(
             """
-            INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings, snapshot)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (run_id, mode, [ticker], style, depth, now, snapshot_ref, json.dumps(warnings)),
+            (run_id, mode, [ticker], style, depth, now, snapshot_ref, json.dumps(warnings),
+             Jsonb(serialize_snapshot(snapshot))),
         )
         return RunResult(
             run_id=run_id, status="insufficient_coverage", ticker=ticker, action_label=None,
@@ -417,10 +419,11 @@ def run_analysis(
     # gets overwritten after that block, not re-inserted.
     conn.execute(
         """
-        INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings, snapshot)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (run_id, mode, [ticker], style, depth, now, snapshot_ref, json.dumps(warnings)),
+        (run_id, mode, [ticker], style, depth, now, snapshot_ref, json.dumps(warnings),
+         Jsonb(serialize_snapshot(snapshot))),
     )
 
     # Once a day is enough for headlines (post = the session); weekly runs minutes after post.
@@ -500,7 +503,8 @@ def run_analysis(
         # Synthesis above failed, and must not be silently dropped from the
         # snapshot file just because the last role in the chain errored.
         write_snapshot(snapshot_dir, run_id, snapshot)
-        conn.execute("UPDATE runs SET warnings = %s WHERE run_id = %s", (json.dumps(warnings), run_id))
+        conn.execute("UPDATE runs SET warnings = %s, snapshot = %s WHERE run_id = %s",
+                     (json.dumps(warnings), Jsonb(serialize_snapshot(snapshot)), run_id))
 
     if persist_prediction:
         _prediction_id, trigger = _upsert_prediction(

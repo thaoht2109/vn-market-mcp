@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 from mcp_server.connection import get_ro_conn
 from mcp_server.envelope import build_envelope
 from mcp_server.identity import pinned_user
 from pipeline.positions import personalize
+from pipeline.snapshot import load_snapshot
 
 
 def get_snapshot_tool(ticker: str | None = None, run_id: str | None = None) -> dict:
@@ -18,11 +17,11 @@ def get_snapshot_tool(ticker: str | None = None, run_id: str | None = None) -> d
     with get_ro_conn() as conn:
         if run_id is not None:
             row = conn.execute(
-                "SELECT run_id, snapshot_ref, as_of FROM runs WHERE run_id = %s", (run_id,)
+                "SELECT run_id, snapshot_ref, as_of, snapshot FROM runs WHERE run_id = %s", (run_id,)
             ).fetchone()
         else:
             row = conn.execute(
-                "SELECT run_id, snapshot_ref, as_of FROM runs WHERE %s = ANY(tickers)"
+                "SELECT run_id, snapshot_ref, as_of, snapshot FROM runs WHERE %s = ANY(tickers)"
                 " ORDER BY as_of DESC LIMIT 1",
                 (ticker,),
             ).fetchone()
@@ -33,15 +32,14 @@ def get_snapshot_tool(ticker: str | None = None, run_id: str | None = None) -> d
             sources=["postgres"], as_of=now, warnings=["không tìm thấy run"],
         )
 
-    found_run_id, snapshot_ref, run_as_of = row
-    snapshot_path = Path(snapshot_ref)
-    if not snapshot_path.exists():
+    found_run_id, snapshot_ref, run_as_of, stored = row
+    snapshot = load_snapshot(stored, snapshot_ref)
+    if snapshot is None:
         return build_envelope(
             {"status": "snapshot_file_missing", "run_id": found_run_id, "ticker": ticker},
             sources=["postgres"], as_of=now, warnings=[f"file snapshot không tồn tại: {snapshot_ref}"],
         )
 
-    snapshot = json.loads(snapshot_path.read_text())
     user = pinned_user()
     if user:
         with get_ro_conn() as conn:

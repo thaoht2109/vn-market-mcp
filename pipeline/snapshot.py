@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -16,6 +17,8 @@ def serialize_snapshot(obj: Any) -> Any:
         return [serialize_snapshot(v) for v in obj]
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None  # jsonb has no NaN/Infinity; a file would have kept the invalid literal
     return obj
 
 
@@ -25,3 +28,14 @@ def write_snapshot(snapshot_dir: Path, run_id: str, snapshot: dict) -> str:
     path = Path(snapshot_dir) / f"{safe_name}.json"
     path.write_text(json.dumps(serialize_snapshot(snapshot), indent=2, ensure_ascii=False))
     return str(path)
+
+
+def load_snapshot(snapshot: dict | None, snapshot_ref: str | None) -> dict | None:
+    """The run's snapshot: the column `runs.snapshot` if set, else the file at `snapshot_ref` (runs from before the
+    column, until ops/backfill_snapshots.py), else None."""
+    if snapshot is not None:
+        return snapshot
+    try:
+        return json.loads(Path(snapshot_ref).read_text())
+    except (OSError, TypeError, ValueError):
+        return None
