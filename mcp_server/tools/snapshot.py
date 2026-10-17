@@ -6,7 +6,6 @@ from mcp_server.connection import get_ro_conn
 from mcp_server.envelope import build_envelope
 from mcp_server.identity import pinned_user
 from pipeline.positions import personalize
-from pipeline.snapshot import load_snapshot
 
 
 def get_snapshot_tool(ticker: str | None = None, run_id: str | None = None) -> dict:
@@ -17,11 +16,11 @@ def get_snapshot_tool(ticker: str | None = None, run_id: str | None = None) -> d
     with get_ro_conn() as conn:
         if run_id is not None:
             row = conn.execute(
-                "SELECT run_id, snapshot_ref, as_of, snapshot FROM runs WHERE run_id = %s", (run_id,)
+                "SELECT run_id, as_of, snapshot FROM runs WHERE run_id = %s", (run_id,)
             ).fetchone()
         else:
             row = conn.execute(
-                "SELECT run_id, snapshot_ref, as_of, snapshot FROM runs WHERE %s = ANY(tickers)"
+                "SELECT run_id, as_of, snapshot FROM runs WHERE %s = ANY(tickers)"
                 " ORDER BY as_of DESC LIMIT 1",
                 (ticker,),
             ).fetchone()
@@ -32,12 +31,12 @@ def get_snapshot_tool(ticker: str | None = None, run_id: str | None = None) -> d
             sources=["postgres"], as_of=now, warnings=["không tìm thấy run"],
         )
 
-    found_run_id, snapshot_ref, run_as_of, stored = row
-    snapshot = load_snapshot(stored, snapshot_ref)
-    if snapshot is None:
+    found_run_id, run_as_of, snapshot = row
+    if snapshot is None:  # a run that predates runs.snapshot and was never backfilled
+        # status name kept: SKILL.md and clients match on it
         return build_envelope(
             {"status": "snapshot_file_missing", "run_id": found_run_id, "ticker": ticker},
-            sources=["postgres"], as_of=now, warnings=[f"file snapshot không tồn tại: {snapshot_ref}"],
+            sources=["postgres"], as_of=now, warnings=["run này không có snapshot (chạy từ trước khi lưu snapshot trong DB)"],
         )
 
     user = pinned_user()

@@ -1,7 +1,8 @@
-import json
 from datetime import date
 
 import pytest
+
+from psycopg.types.json import Jsonb
 
 from db.connection import get_conn
 from mcp_server.tools.stock_report import get_stock_report_tool, save_commentary_tool, verify_commentary
@@ -26,13 +27,12 @@ SNAP = {
 }
 
 
-def _run(path, run_id, snap):
-    path.write_text(json.dumps(snap))
+def _run(run_id, snap):
     with get_conn() as conn:
         conn.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
         conn.execute(
-            "INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings)"
-            " VALUES (%s, 'scheduled_pre', ARRAY[%s], 'long', 'quick', now(), %s, '[]')", (run_id, TICKER, str(path)))
+            "INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot, warnings)"
+            " VALUES (%s, 'scheduled_pre', ARRAY[%s], 'long', 'quick', now(), %s, '[]')", (run_id, TICKER, Jsonb(snap)))
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ def seeded(tmp_path):
         conn.execute("INSERT INTO prices_daily (ticker, trade_date, open, high, low, close, volume, source, fetched_at)"
                      " VALUES (%s, %s, 100, 101, 99, 100, 900, 't', now()), (%s, %s, 99, 100, 98, 99, 800, 't', now())",
                      (TICKER, date(2026, 10, 2), TICKER, date(2026, 10, 1)))
-    _run(tmp_path / "a.json", RUN, SNAP)
+    _run(RUN, SNAP)
     yield tmp_path
     with get_conn() as conn:
         conn.execute("DELETE FROM runs WHERE run_id LIKE 'test:RPTCMT:%'")
@@ -62,14 +62,14 @@ def test_commentary_is_written_once_then_replayed_until_data_changes(seeded):
     assert hit["final"].startswith(first["report"])
 
     # new run, same numbers (only as_of / LLM text differ) → still replayed
-    _run(seeded / "b.json", "test:RPTCMT:2", {**SNAP, "synthesis": {"x": "other llm text"}})
+    _run("test:RPTCMT:2", {**SNAP, "synthesis": {"x": "other llm text"}})
     assert get_stock_report_tool(TICKER, "test:RPTCMT:2")["data"]["needs_commentary"] is False
 
     # a number changes → commentary must be rewritten
-    _run(seeded / "c.json", "test:RPTCMT:3", {**SNAP, "technical": {**SNAP["technical"], "rsi14": 61.0}})
+    _run("test:RPTCMT:3", {**SNAP, "technical": {**SNAP["technical"], "rsi14": 61.0}})
     assert get_stock_report_tool(TICKER, "test:RPTCMT:3")["data"]["needs_commentary"] is True
     # ... and so does a VN-Index move
-    _run(seeded / "d.json", "test:RPTCMT:4", {**SNAP, "market": {**SNAP["market"], "close": 1650.0}})
+    _run("test:RPTCMT:4", {**SNAP, "market": {**SNAP["market"], "close": 1650.0}})
     assert get_stock_report_tool(TICKER, "test:RPTCMT:4")["data"]["needs_commentary"] is True
 
 
@@ -138,7 +138,7 @@ def test_judged_headlines_add_a_reference_score_but_never_change_the_label(seede
     snap = {**SNAP, "composite_score": 52.0, "weight_coverage": 0.85,
             "components": {"technical": 40.0, "flow": None, "news_events": None,
                            "fundamental_valuation": 60.0, "sector_macro": 45.0}}
-    _run(seeded / "n.json", "test:RPTCMT:N", snap)
+    _run("test:RPTCMT:N", snap)
     with get_conn() as conn:
         ensure_news_partitions(conn, date.today())
         conn.execute("DELETE FROM news_items WHERE source = 'test_judge'")

@@ -11,7 +11,6 @@ from mcp_server.identity import no_personal_scope, pinned_user
 from pipeline.coverage import UnknownTickerError, classify_universe_tier, resolve_or_register_ticker
 from pipeline.jobs import enqueue
 from pipeline.positions import personalize
-from pipeline.snapshot import load_snapshot
 from providers.vnstock_provider import VNStockProvider
 
 
@@ -95,7 +94,7 @@ def list_watchlist_tool() -> dict:
     with get_ro_conn() as conn:
         rows = conn.execute(
             """
-            SELECT w.ticker, t.name, t.exchange, p.action_label, p.confidence, p.created_at, r.snapshot_ref, r.snapshot
+            SELECT w.ticker, t.name, t.exchange, p.action_label, p.confidence, p.created_at, r.snapshot
             FROM watchlist_extra w
             JOIN tickers t USING (ticker)
             LEFT JOIN LATERAL (
@@ -108,10 +107,10 @@ def list_watchlist_tool() -> dict:
             """,
             (user,),
         ).fetchall()
-        for ticker, name, exchange, label, conf, label_at, snapshot_ref, stored in rows:
+        for ticker, name, exchange, label, conf, label_at, stored in rows:
             snapshot = {"action_label": label}
-            if (full := load_snapshot(stored, snapshot_ref)) is not None:
-                snapshot = {**full, "action_label": label}
+            if stored is not None:
+                snapshot = {**stored, "action_label": label}
             view = personalize(conn, snapshot, ticker, user)
             items.append({
                 "ticker": ticker, "name": name, "exchange": exchange, "action_label": view["action_label"],

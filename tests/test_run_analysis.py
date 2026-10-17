@@ -1,8 +1,6 @@
-import json
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -117,20 +115,23 @@ class _StubProvider:
         return pd.DataFrame(columns=["trade_date", "open", "high", "low", "close", "volume"])
 
 
+def _stored_snapshot(db_conn, result):
+    return db_conn.execute("SELECT snapshot FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
+
+
 def test_run_analysis_happy_path_writes_run_and_prediction(db_conn, tmp_path):
     latest_day, latest_close = _seed_env(db_conn, "VNMTEST")
     provider = _StubProvider(latest_day, latest_close)
 
-    result = run_analysis(db_conn, provider, "VNMTEST", tmp_path)
+    result = run_analysis(db_conn, provider, "VNMTEST")
 
     assert result.status == "ok"
     assert result.action_label is not None
 
-    run_row = db_conn.execute("SELECT snapshot_ref FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()
+    run_row = db_conn.execute("SELECT snapshot, snapshot_ref FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()
     assert run_row is not None
-    assert Path(run_row[0]).exists()
-    stored = db_conn.execute("SELECT snapshot FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
-    assert stored == json.loads(Path(run_row[0]).read_text())  # the column holds what the file does
+    assert run_row[0]["ticker"] == "VNMTEST"  # the snapshot is in the row ...
+    assert run_row[1] is None and list(tmp_path.iterdir()) == []  # ... and no file is written
 
     prediction_row = db_conn.execute(
         "SELECT action_label, status, horizon_days FROM predictions WHERE ticker = 'VNMTEST'"
@@ -159,7 +160,7 @@ def test_run_analysis_rejects_mis_scaled_bar_mid_history(db_conn, tmp_path):
         (bad_day,),
     )
 
-    result = run_analysis(db_conn, _StubProvider(latest_day, latest_close), "VNMTEST", tmp_path)
+    result = run_analysis(db_conn, _StubProvider(latest_day, latest_close), "VNMTEST")
 
     assert result.status == "data_quality_error"
     assert str(bad_day) in result.message
@@ -176,13 +177,12 @@ def test_run_analysis_flags_stale_fundamentals_vintage(db_conn, tmp_path):
     # quarters. The run must say so and fail closed (data_stale → conservative
     # label, halved confidence) rather than value the stock on a 2018 P/B.
     fresh_day, fresh_close = _seed_env(db_conn, "VNMFRESH")
-    fresh = run_analysis(db_conn, _StubProvider(fresh_day, fresh_close), "VNMFRESH", tmp_path)
+    fresh = run_analysis(db_conn, _StubProvider(fresh_day, fresh_close), "VNMFRESH")
     stale_day, stale_close = _seed_env(db_conn, "VNMSTALE")
-    stale = run_analysis(db_conn, _Vintage2018Provider(stale_day, stale_close), "VNMSTALE", tmp_path)
+    stale = run_analysis(db_conn, _Vintage2018Provider(stale_day, stale_close), "VNMSTALE")
 
     def snapshot_of(result):
-        ref = db_conn.execute("SELECT snapshot_ref FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
-        return json.loads(Path(ref).read_text())
+        return _stored_snapshot(db_conn, result)
 
     assert not any("chỉ số tài chính" in w for w in snapshot_of(fresh)["warnings"])
     assert any("chỉ số tài chính" in w for w in snapshot_of(stale)["warnings"])
@@ -218,7 +218,7 @@ def test_run_analysis_wires_market_regime_into_action_label(db_conn, tmp_path, m
                 }
             )
 
-    run_analysis(db_conn, _RiskOffProvider(latest_day, latest_close), "VNMTEST", tmp_path)
+    run_analysis(db_conn, _RiskOffProvider(latest_day, latest_close), "VNMTEST")
 
     assert seen_regimes == ["risk_off"]
 
@@ -229,8 +229,8 @@ def test_run_analysis_rerun_with_unchanged_label_does_not_duplicate_prediction(d
     latest_day, latest_close = _seed_env(db_conn, "VNMTEST")
     provider = _StubProvider(latest_day, latest_close)
 
-    first = run_analysis(db_conn, provider, "VNMTEST", tmp_path)
-    second = run_analysis(db_conn, provider, "VNMTEST", tmp_path)
+    first = run_analysis(db_conn, provider, "VNMTEST")
+    second = run_analysis(db_conn, provider, "VNMTEST")
 
     assert first.action_label == second.action_label
     count = db_conn.execute(
@@ -242,7 +242,7 @@ def test_run_analysis_rerun_with_unchanged_label_does_not_duplicate_prediction(d
 def test_run_analysis_unknown_ticker_is_rejected(db_conn, tmp_path):
     runs_before = db_conn.execute("SELECT count(*) FROM runs").fetchone()[0]
 
-    result = run_analysis(db_conn, _StubProvider(None, None), "NOTATICKER", tmp_path)
+    result = run_analysis(db_conn, _StubProvider(None, None), "NOTATICKER")
     assert result.status == "unknown_ticker"
     assert result.run_id is None
 
@@ -253,7 +253,7 @@ def test_run_analysis_backfills_history_for_a_short_history_ticker(db_conn, tmp_
     latest_day, latest_close = _seed_env(db_conn, "SHORTHIST", history_days=30, vn30_member=False)
     provider = _StubProvider(latest_day, latest_close)
 
-    run_analysis(db_conn, provider, "SHORTHIST", tmp_path)
+    run_analysis(db_conn, provider, "SHORTHIST")
 
     assert provider.ohlcv_starts[0] <= latest_day - timedelta(days=3 * 365)
 
@@ -263,7 +263,7 @@ def test_run_analysis_fills_gap_from_last_stored_bar(db_conn, tmp_path):
     last_stored = db_conn.execute("SELECT max(trade_date) FROM prices_daily WHERE ticker = 'GAPHIST'").fetchone()[0]
     provider = _StubProvider(latest_day, latest_close)
 
-    run_analysis(db_conn, provider, "GAPHIST", tmp_path)
+    run_analysis(db_conn, provider, "GAPHIST")
 
     assert provider.ohlcv_starts[0] == last_stored
 
@@ -277,7 +277,7 @@ def test_run_analysis_flags_stale_calendar_not_reseeded_for_today(db_conn, tmp_p
     latest_day, latest_close = _seed_env(db_conn, "VNMTEST", calendar_lag_days=10)
     provider = _StubProvider(latest_day, latest_close)
 
-    result = run_analysis(db_conn, provider, "VNMTEST", tmp_path)
+    result = run_analysis(db_conn, provider, "VNMTEST")
 
     assert result.status == "ok"
     freshness_row = db_conn.execute(
@@ -329,12 +329,11 @@ def test_run_analysis_scheduled_post_runs_no_llm_by_default(db_conn, tmp_path):
             calls.append(1)
             raise AssertionError("no LLM may run inside the pipeline")
 
-    result = run_analysis(db_conn, _StubProvider(latest_day, latest_close), "VNMTEST", tmp_path,
+    result = run_analysis(db_conn, _StubProvider(latest_day, latest_close), "VNMTEST",
                           mode="scheduled_post", llm_clients={"deepseek": _Boom()})
 
     assert result.status == "ok" and calls == [] and result.report_text is None
-    snapshot_ref = db_conn.execute("SELECT snapshot_ref FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
-    snapshot = json.loads(Path(snapshot_ref).read_text())
+    snapshot = db_conn.execute("SELECT snapshot FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
     assert not {"synthesis", "debate", "news"} & snapshot.keys()
     assert db_conn.execute("SELECT count(*) FROM llm_calls WHERE run_id = %s", (result.run_id,)).fetchone()[0] == 0
 
@@ -352,14 +351,12 @@ def test_run_analysis_scheduled_post_calls_synthesis_and_stores_it(db_conn, tmp_
     }
 
     result = run_analysis(
-        db_conn, provider, "VNMTEST", tmp_path, mode="scheduled_post",
+        db_conn, provider, "VNMTEST", mode="scheduled_post",
         llm_clients={"deepseek": _FakeSynthesisClient(synthesis_output)},
     )
 
     assert result.status == "ok"
-    snapshot_ref = db_conn.execute("SELECT snapshot_ref FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
-    import json
-    snapshot = json.loads(Path(snapshot_ref).read_text())
+    snapshot = _stored_snapshot(db_conn, result)
     assert snapshot["synthesis"]["thesis_summary"] == synthesis_output["thesis_summary"]
     assert snapshot["action_label"] == result.action_label  # no downgrade requested
     # label is "watch" here (not stay_out), so Bull/Bear/Verifier must have run too.
@@ -380,14 +377,12 @@ def test_run_analysis_scheduled_post_skips_bull_bear_for_stay_out_label(db_conn,
     }
 
     result = run_analysis(
-        db_conn, provider, "VNMTEST", tmp_path, mode="scheduled_post",
+        db_conn, provider, "VNMTEST", mode="scheduled_post",
         llm_clients={"deepseek": _FakeSynthesisClient(synthesis_output)},
     )
 
     assert result.action_label == "stay_out"
-    snapshot_ref = db_conn.execute("SELECT snapshot_ref FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
-    import json
-    snapshot = json.loads(Path(snapshot_ref).read_text())
+    snapshot = _stored_snapshot(db_conn, result)
     assert "debate" not in snapshot
     assert snapshot["news"] == []  # news digest still runs regardless of label
 
@@ -405,7 +400,7 @@ def test_run_analysis_scheduled_post_applies_downgrade_recommendation(db_conn, t
     }
 
     result = run_analysis(
-        db_conn, provider, "VNMTEST", tmp_path, mode="scheduled_post",
+        db_conn, provider, "VNMTEST", mode="scheduled_post",
         llm_clients={"deepseek": _FakeSynthesisClient(synthesis_output)},
     )
 
@@ -428,12 +423,11 @@ def test_run_analysis_in_session_stores_no_prediction_and_never_shows_a_buy(db_c
     monkeypatch.setattr(ram, "is_provisional_session", lambda *a, **k: True)
     monkeypatch.setattr(ram, "action_label", lambda inp, cfg: "buy_accumulate")
 
-    result = run_analysis(db_conn, _StubProvider(latest_day, latest_close), "VNMTEST", tmp_path)
+    result = run_analysis(db_conn, _StubProvider(latest_day, latest_close), "VNMTEST")
 
     assert result.status == "ok" and result.action_label == "watch" and result.message == "trigger=provisional"
     assert _prediction_rows(db_conn, "VNMTEST") == []
-    snapshot_ref = db_conn.execute("SELECT snapshot_ref FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
-    session = json.loads(Path(snapshot_ref).read_text())["session"]
+    session = db_conn.execute("SELECT snapshot FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]["session"]
     assert session == {"provisional": True, "live_label": "buy_accumulate", "official_label": None}
 
 
@@ -442,20 +436,20 @@ def test_run_analysis_in_session_upgrade_waits_but_stop_breach_downgrades(db_con
     latest_day, latest_close = _seed_env(db_conn, "VNMTEST")
     provider = _StubProvider(latest_day, latest_close)
     monkeypatch.setattr(ram, "action_label", lambda inp, cfg: "watch")
-    run_analysis(db_conn, provider, "VNMTEST", tmp_path)  # after the close: official "watch"
+    run_analysis(db_conn, provider, "VNMTEST")  # after the close: official "watch"
     assert _prediction_rows(db_conn, "VNMTEST") == [("watch",)]
 
     monkeypatch.setattr(ram, "is_provisional_session", lambda *a, **k: True)
     monkeypatch.setattr(ram, "action_label", lambda inp, cfg: "buy_accumulate")
-    up = run_analysis(db_conn, provider, "VNMTEST", tmp_path)
+    up = run_analysis(db_conn, provider, "VNMTEST")
     assert up.action_label == "watch" and _prediction_rows(db_conn, "VNMTEST") == [("watch",)]  # upgrade waits
 
     monkeypatch.setattr(ram, "action_label", lambda inp, cfg: "stay_out")
-    soft = run_analysis(db_conn, provider, "VNMTEST", tmp_path)
+    soft = run_analysis(db_conn, provider, "VNMTEST")
     assert soft.action_label == "watch"  # no trigger: noise, official kept
 
     db_conn.execute("UPDATE predictions SET stop_loss = 1e9 WHERE ticker = 'VNMTEST'")  # price now below the stop
-    down = run_analysis(db_conn, provider, "VNMTEST", tmp_path)
+    down = run_analysis(db_conn, provider, "VNMTEST")
     assert down.action_label == "stay_out"
     assert [r[0] for r in _prediction_rows(db_conn, "VNMTEST")] == ["watch", "stay_out"]
 
@@ -467,12 +461,10 @@ def test_run_analysis_on_demand_never_calls_synthesis(db_conn, tmp_path):
     # No llm_clients injected and mode defaults to on_demand — if synthesis
     # were accidentally invoked here, it would try a real network call and
     # this test would hang/fail rather than silently pass.
-    result = run_analysis(db_conn, provider, "VNMTEST", tmp_path)
+    result = run_analysis(db_conn, provider, "VNMTEST")
 
     assert result.status == "ok"
-    snapshot_ref = db_conn.execute("SELECT snapshot_ref FROM runs WHERE run_id = %s", (result.run_id,)).fetchone()[0]
-    import json
-    snapshot = json.loads(Path(snapshot_ref).read_text())
+    snapshot = _stored_snapshot(db_conn, result)
     assert "synthesis" not in snapshot
 
 
@@ -497,7 +489,7 @@ def test_run_analysis_insufficient_coverage_writes_run_but_no_prediction(db_conn
         def get_foreign_flow(self, ticker, start, end):
             return []
 
-    result = run_analysis(db_conn, _ThinProvider(), "ABC", tmp_path)
+    result = run_analysis(db_conn, _ThinProvider(), "ABC")
 
     assert result.status == "insufficient_coverage"
     assert result.action_label is None
@@ -524,12 +516,12 @@ def test_run_with_retry_succeeds_after_transient_connection_failure(monkeypatch)
 
     monkeypatch.setattr(
         "pipeline.run_analysis.run_analysis",
-        lambda conn, provider, ticker, snapshot_dir, style, depth: RunResult(
+        lambda conn, provider, ticker, style, depth: RunResult(
             run_id="r1", status="ok", ticker=ticker, action_label="watch", message="ok",
         ),
     )
 
-    result = _run_with_retry(flaky_get_conn, object(), "FPT", Path("snapshots"), "long", "quick")
+    result = _run_with_retry(flaky_get_conn, object(), "FPT", "long", "quick")
 
     assert result.status == "ok"
     assert attempts["n"] == 3
@@ -544,7 +536,7 @@ def test_run_with_retry_raises_after_exhausting_attempts(monkeypatch):
         yield  # pragma: no cover — unreachable, keeps this a generator
 
     with pytest.raises(psycopg.OperationalError):
-        _run_with_retry(always_fails, object(), "FPT", Path("snapshots"), "long", "quick")
+        _run_with_retry(always_fails, object(), "FPT", "long", "quick")
 
 
 def test_run_analysis_tier_b_confidence_is_capped_not_buy_blocked(db_conn, tmp_path):
@@ -556,7 +548,7 @@ def test_run_analysis_tier_b_confidence_is_capped_not_buy_blocked(db_conn, tmp_p
     latest_day, latest_close = _seed_env(db_conn, "TIERBTEST", vn30_member=False)
     provider = _StubProvider(latest_day, latest_close)
 
-    result = run_analysis(db_conn, provider, "TIERBTEST", tmp_path)
+    result = run_analysis(db_conn, provider, "TIERBTEST")
 
     assert result.status == "ok"
     row = db_conn.execute(

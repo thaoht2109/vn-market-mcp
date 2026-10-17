@@ -1,6 +1,6 @@
-import json
 
 import pytest
+from psycopg.types.json import Jsonb
 
 from db.connection import get_conn
 from mcp_server.tools import watchlist
@@ -87,9 +87,8 @@ def test_shared_chat_has_no_personal_scope(monkeypatch):
         assert conn.execute("SELECT count(*) FROM jobs WHERE ticker = 'WATCHTEST'").fetchone()[0] == 0
 
 
-def test_list_watchlist_shows_the_holders_label(as_user, tmp_path):
-    snap = tmp_path / "s.json"
-    snap.write_text(json.dumps({"action_label": "watch", "composite_score": 60, "confidence": 0.7}))
+def test_list_watchlist_shows_the_holders_label(as_user):
+    snap = {"action_label": "watch", "composite_score": 60, "confidence": 0.7}
 
     as_user("bob")
     watch_ticker_tool("WATCHTEST")
@@ -98,8 +97,8 @@ def test_list_watchlist_shows_the_holders_label(as_user, tmp_path):
     set_position_tool("WATCHTEST", avg_cost=10.0)
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot_ref, warnings)"
-            " VALUES ('watch-run', 'on_demand', ARRAY['WATCHTEST'], 'long', 'quick', now(), %s, '[]')", (str(snap),),
+            "INSERT INTO runs (run_id, mode, tickers, style, depth, as_of, snapshot, warnings)"
+            " VALUES ('watch-run', 'on_demand', ARRAY['WATCHTEST'], 'long', 'quick', now(), %s, '[]')", (Jsonb(snap),),
         )
         conn.execute(
             "INSERT INTO predictions (run_id, source, ticker, trigger, action_label, signal_type, confidence)"
