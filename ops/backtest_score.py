@@ -9,7 +9,8 @@ valuation and the label rules on top of them, at the lower confidence that cover
 ponytail: today's VN30 members over the whole history (survivorship bias), overlapping windows (the
 t-stat is optimistic); add point-in-time membership if index_membership gets history.
 
-Also scores the advisor's views (advisor_views) against the system label on the same forward excess.
+Also scores the advisor's views (advisor_views) against the system label on the same forward excess, Hermes'
+own sub-agent apart from any other caller's.
 
 Usage: python -m ops.backtest_score [--step 5]
 """
@@ -182,27 +183,39 @@ def report(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+# Hermes' own sub-agent: a Telegram id (digits) or a group chat ("shared"). Anything else came from another front
+# door's caller (another assistant, other prompts), so it is scored apart and never mixed into the playbook's line.
+_HERMES = "user_id ~ '^[0-9]+$' OR user_id = 'shared'"
+
+
 def advisor_report(conn, members, prices) -> str:
     """Advisor stance vs system label on the 20-session forward excess, per saved view."""
-    rows = conn.execute("SELECT ticker, stance, code_label, created_at, coalesce(playbook_version, '-')"
+    rows = conn.execute(f"SELECT ticker, stance, code_label, created_at, coalesce(playbook_version, '-'), {_HERMES}"
                         " FROM advisor_views ORDER BY created_at").fetchall()
     if not rows:
         return "\n== Cố vấn ==\nChưa có góc nhìn cố vấn nào được lưu."
     dates = session_dates(members, prices)
     h, graded = HORIZONS[0], []
-    for ticker, stance, code_label, created, version in rows:
+    for ticker, stance, code_label, created, version, hermes in rows:
         day = created.astimezone(_VN_TZ).date()
         i = next((k for k, d in enumerate(dates) if d >= day), None)
         x = forward_excess(prices, members, dates, i, h, [ticker]).get(ticker) if i is not None else None
         if x is not None:
-            graded.append((version, DIRECTION.get(stance, 0), DIRECTION.get(code_label, 0), x))
-    lines = [f"\n== Cố vấn ({len(rows)} góc nhìn, {len(graded)} đã đủ {h} phiên để chấm) =="]
-    for version in sorted({g[0] for g in graded}):
-        g = [x[1:] for x in graded if x[0] == version]
+            graded.append((hermes, version, DIRECTION.get(stance, 0), DIRECTION.get(code_label, 0), x))
+    return f"\n== Cố vấn ({len(rows)} góc nhìn, {len(graded)} đã đủ {h} phiên để chấm) ==\n" + advisor_lines(graded)
+
+
+def advisor_lines(graded: list[tuple[bool, str, int, int, float]]) -> str:
+    """(from Hermes, playbook version, stance direction, label direction, forward excess) -> one line per source
+    and version, Hermes first."""
+    lines = []
+    for hermes, version in sorted({g[:2] for g in graded}, key=lambda k: (not k[0], k[1])):
+        g = [x[2:] for x in graded if x[:2] == (hermes, version)]
         differ = [x for x in g if x[0] != x[1]]
         adv = sum(1 for a, _, x in differ if a * x > 0)
         sys_ = sum(1 for _, s, x in differ if s * x > 0)
-        lines.append(f"Playbook {version}: {len(g)} góc nhìn, cùng hướng nhãn {len(g) - len(differ)}, khác hướng {len(differ)}"
+        who = "" if hermes else " (nguồn khác Hermes: agent của người dùng khác, không dùng để đánh giá playbook)"
+        lines.append(f"Playbook {version}{who}: {len(g)} góc nhìn, cùng hướng nhãn {len(g) - len(differ)}, khác hướng {len(differ)}"
                      + (f" (khi khác: cố vấn đúng {adv}, hệ thống đúng {sys_}; trung lập không tính)." if differ else "."))
     return "\n".join(lines)
 

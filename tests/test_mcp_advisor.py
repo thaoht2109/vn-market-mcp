@@ -5,7 +5,7 @@ import pandas as pd
 from db.connection import get_conn
 from mcp_server.tools.advisor import _raw, get_advisor_input_tool, playbook, render_advice, save_advice_tool
 from pipeline.stock_report import DISCLAIMER
-from ops.backtest_score import forward_excess, known_quarters, quarter_end
+from ops.backtest_score import advisor_lines, forward_excess, known_quarters, quarter_end
 from tests.test_mcp_stock_report import GOOD, RUN, TICKER, seeded  # noqa: F401  (fixture)
 
 
@@ -91,3 +91,10 @@ def test_advice_is_laid_out_as_sections_with_figures_in_bold():
                                      "**Kế hoạch**", "- Nếu thủng **19.600đ** thì đứng ngoài.", "**Rủi ro lớn nhất**"]
     assert "MA20" in out and "**theo dõi, chưa giải ngân**" in out and out.endswith("_Trùng với nhãn hệ thống._")
     assert "Cổ phiếu cũ" in render_advice("watch", None, "Cổ phiếu cũ")  # rows saved before the layout
+
+
+def test_advisor_score_keeps_hermes_views_apart_from_other_callers():
+    graded = [(False, "aaaa", -1, 1, 0.05), (True, "aaaa", 1, -1, 0.05), (True, "aaaa", 0, 0, 0.01)]
+    hermes, other = advisor_lines(graded).split("\n")
+    assert hermes.startswith("Playbook aaaa: 2 góc nhìn") and "cố vấn đúng 1, hệ thống đúng 0" in hermes
+    assert other.startswith("Playbook aaaa (nguồn khác Hermes") and "cố vấn đúng 0, hệ thống đúng 1" in other
