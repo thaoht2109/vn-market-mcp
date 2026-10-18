@@ -533,7 +533,8 @@ def _run_with_retry(get_conn_fn, provider, ticker: str, style: str, depth: str) 
 if __name__ == "__main__":
     import argparse
 
-    from db.connection import get_conn
+    # pipeline_rw like the worker: the worker container (where README runs this) has no admin DATABASE_URL.
+    from mcp_server.connection import get_rw_conn
     from ops.alerting import send_ops_alert
     from providers.vnstock_provider import VNStockProvider
 
@@ -546,7 +547,7 @@ if __name__ == "__main__":
     log_event("run_started", ticker=args.ticker, style=args.style, depth=args.depth)
     try:
         result = _run_with_retry(
-            get_conn, VNStockProvider(source="VCI"), args.ticker, args.style, args.depth,
+            get_rw_conn, VNStockProvider(source="VCI"), args.ticker, args.style, args.depth,
         )
         if result.status == "ok":
             log_event("run_finished", ticker=args.ticker, status=result.status, action_label=result.action_label)
