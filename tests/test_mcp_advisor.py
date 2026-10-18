@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 import pandas as pd
@@ -87,7 +88,7 @@ def test_advice_is_laid_out_as_sections_with_figures_in_bold():
     stored = ('{"reasons": ["Giá dưới MA20 20.705 (-2,7%), RSI(14) 23,1."], "plan": ["Nếu thủng 19.600đ thì đứng ngoài."],'
               ' "risk": "Cắt lỗ 70.657."}')
     out = render_advice("watch", "watch", stored)
-    assert out.splitlines()[1:6] == ["**Lý do**", "- Giá dưới MA20 **20.705** (**-2,7%**), RSI(**14**) **23,1**.",
+    assert out.splitlines()[1:6] == ["**Lý do**", "- Giá dưới MA20 **20.705** (**-2,7%**), RSI(14) **23,1**.",
                                      "**Kế hoạch**", "- Nếu thủng **19.600đ** thì đứng ngoài.", "**Rủi ro lớn nhất**"]
     assert "MA20" in out and "**theo dõi, chưa giải ngân**" in out and out.endswith("_Trùng với nhãn hệ thống._")
     assert "Cổ phiếu cũ" in render_advice("watch", None, "Cổ phiếu cũ")  # rows saved before the layout
@@ -98,3 +99,9 @@ def test_advisor_score_keeps_hermes_views_apart_from_other_callers():
     hermes, other = advisor_lines(graded).split("\n")
     assert hermes.startswith("Playbook aaaa: 2 góc nhìn") and "cố vấn đúng 1, hệ thống đúng 0" in hermes
     assert other.startswith("Playbook aaaa (nguồn khác Hermes") and "cố vấn đúng 0, hệ thống đúng 1" in other
+
+
+def test_advice_bolds_figures_but_not_indicator_periods():
+    stored = json.dumps({"reasons": ["RSI(14) 20,4 và giá dưới MA20 61.505"], "plan": ["Chờ"], "risk": "Thị trường"})
+    out = render_advice("watch", "watch", stored)
+    assert "RSI(14) **20,4**" in out and "MA20 **61.505**" in out

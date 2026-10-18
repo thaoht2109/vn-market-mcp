@@ -17,7 +17,7 @@ from pathlib import Path
 from mcp_server.connection import get_ro_conn, get_rw_conn
 from mcp_server.envelope import build_envelope
 from mcp_server.identity import pinned_user
-from mcp_server.tools.stock_report import _load, verify_commentary
+from mcp_server.tools.stock_report import _INDICATOR, _load, verify_commentary
 from pipeline.stock_report import DISCLAIMER, _n, _pct
 
 ADVISOR_TITLE = "**Góc nhìn cố vấn**"
@@ -104,7 +104,9 @@ def render_advice(stance: str, code_label: str | None, advice: str) -> str:
         parts = json.loads(advice)
     except ValueError:
         return f"{head}\n{advice}\n{note}"
-    bold = lambda t: _FIGURE.sub(lambda m: f"**{m.group()}**", t)  # noqa: E731
+    def bold(t: str) -> str:  # a figure, not the period inside an indicator's name ("RSI(14)", "MA20")
+        names = [m.span() for m in _INDICATOR.finditer(t)]
+        return _FIGURE.sub(lambda m: m.group() if any(a <= m.start() < b for a, b in names) else f"**{m.group()}**", t)
     lines = [head, "**Lý do**", *("- " + bold(t) for t in parts["reasons"]),
              "**Kế hoạch**", *("- " + bold(t) for t in parts["plan"]), "**Rủi ro lớn nhất**", "- " + bold(parts["risk"]), note]
     return "\n".join(lines)
