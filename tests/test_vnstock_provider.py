@@ -107,6 +107,15 @@ def test_get_ohlcv_missing_value_field_falls_back_to_close_times_volume():
     assert bars[0].value == 84500 * 1_000_000
 
 
+def test_bars_after_end_are_dropped():
+    # vnstock returns up to the latest session whatever `end` says; a past as_of must not see later days.
+    rows = [{"time": d, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1} for d in ("2026-10-20", "2026-10-21")]
+    provider = VNStockProvider(source="VCI", clients={"quote": _FakeQuote(pd.DataFrame(rows))}, scale_map={"VCI": 1000})
+
+    assert list(provider.get_market_index("VNINDEX", date(2026, 10, 1), date(2026, 10, 20))["trade_date"]) == ["2026-10-20"]
+    assert [b.trade_date for b in provider.get_ohlcv("VNM", date(2026, 10, 1), date(2026, 10, 20))] == [date(2026, 10, 20)]
+
+
 def test_get_fundamentals_transposes_wide_ratio_dataframe():
     # vnstock.api.financial.Finance.ratio() returns one row per metric,
     # one column per period — the opposite orientation of FundamentalRecord.

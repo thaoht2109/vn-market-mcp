@@ -219,6 +219,7 @@ class VNStockProvider:
         """
         self._throttle()
         raw = self._quote(symbol).history(symbol=symbol, start=start.isoformat(), end=end.isoformat())
+        raw = raw[raw["time"].map(_to_date) <= end]  # vnstock ignores `end`: a past as_of got later sessions
         return raw.rename(columns={"time": "trade_date"})
 
     def get_ohlcv(self, ticker: str, start: date, end: date) -> list[PriceBar]:
@@ -227,6 +228,8 @@ class VNStockProvider:
         raw = self._quote(ticker).history(symbol=ticker, start=start.isoformat(), end=end.isoformat())
         bars = []
         for row in raw.to_dict("records"):
+            if _to_date(row["time"]) > end:  # vnstock ignores `end`, see get_market_index
+                continue
             close = normalize_price_unit(row["close"], self.source, self.scale_map)
             volume = int(row["volume"])
             # vnstock.api.quote.Quote.history() doesn't return a traded-value
