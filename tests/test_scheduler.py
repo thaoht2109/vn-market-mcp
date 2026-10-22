@@ -181,3 +181,38 @@ def test_alert_check_runs_every_15_min_while_prices_move_on_trading_days(db_conn
     finally:
         db_conn.execute("DELETE FROM jobs WHERE job_key LIKE 'alert_check:%:2020-01-%'")
         db_conn.commit()
+
+
+def test_freshness_check_alerts_once_when_the_session_data_is_missing(db_conn, monkeypatch):
+    import ops.scheduler as scheduler
+
+    insert_ticker(db_conn, "FRESHA")
+    insert_ticker(db_conn, "FRESHB")
+    day = date(2020, 1, 7)
+    seed_calendar_from_weekdays(db_conn, day, day, holidays=set())
+    db_conn.execute(
+        "INSERT INTO prices_daily (ticker, trade_date, open, high, low, close, volume, source, fetched_at)"
+        " VALUES ('FRESHA', %s, 1, 1, 1, 1, 1, 'VCI', now())", (day,),
+    )
+    alerts = []
+    monkeypatch.setattr(scheduler, "get_vn30_tickers", lambda conn: ["FRESHA", "FRESHB"])
+    monkeypatch.setattr(scheduler, "calendar_covers", lambda conn, d: False)
+    monkeypatch.setattr(scheduler, "send_ops_alert", alerts.append)
+    fired: set[str] = set()
+
+    scheduler._run_freshness_check_if_due(db_conn, datetime(2020, 1, 7, 11, 29, tzinfo=timezone.utc), fired)  # 18:29 VN
+    assert alerts == []
+    scheduler._run_freshness_check_if_due(db_conn, datetime(2020, 1, 7, 11, 30, tzinfo=timezone.utc), fired)
+    scheduler._run_freshness_check_if_due(db_conn, datetime(2020, 1, 7, 11, 31, tzinfo=timezone.utc), fired)
+    assert len(alerts) == 1
+    assert "1/2 mã VN30" in alerts[0] and "FRESHB" in alerts[0] and "FRESHA" not in alerts[0]
+    assert "market_regime_daily" in alerts[0] and "trading_calendar" in alerts[0]
+
+    db_conn.execute(
+        "INSERT INTO prices_daily (ticker, trade_date, open, high, low, close, volume, source, fetched_at)"
+        " VALUES ('FRESHB', %s, 1, 1, 1, 1, 1, 'VCI', now())", (day,),
+    )
+    db_conn.execute("INSERT INTO market_regime_daily (trade_date, index_symbol, regime, computed_at)"
+                    " VALUES (%s, 'VNINDEX', 'risk_on', now())", (day,))
+    monkeypatch.setattr(scheduler, "calendar_covers", lambda conn, d: True)
+    assert scheduler.freshness_problems(db_conn, day) == []

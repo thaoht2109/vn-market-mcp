@@ -3,7 +3,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
-.claude/
+.claude/*
+!.claude/skills/
 .codegraph/
 .code-review-graph/
 snapshots/

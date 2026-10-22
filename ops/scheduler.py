@@ -13,16 +13,17 @@ Run as a long-lived process:
 from __future__ import annotations
 
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from llm.macro import MACRO_JOB_TYPE
 from mcp_server.connection import get_admin_conn, get_rw_conn
 from ops.alerting import log_event, send_ops_alert
-from pipeline.calendar import NoCalendarDataError, is_trading_day
+from pipeline.calendar import NoCalendarDataError, calendar_covers, is_trading_day
 from pipeline.jobs import ALERT_CHECK_JOB_TYPE, COLLECT_RSS_JOB_TYPE, enqueue
 from pipeline.news import ensure_news_partitions
 from pipeline.llm_gate import llm_pipeline_enabled
+from quality.checks import check_daily_completeness
 
 POLL_INTERVAL_S = 60
 
@@ -103,6 +104,45 @@ def _run_alert_check_if_due(conn, now: datetime, already_fired_today: set[str]) 
     )
     if created:
         log_event("scheduler_enqueued", job_key=job_key, ticker=MACRO_TICKER, job_type=ALERT_CHECK_JOB_TYPE)
+
+
+# Freshness check (18:30 VN, after the close_sync retry): every job can report "done" and still leave
+# today's data missing (a DNS outage on 20-21/10/2026 did exactly that, silently). This looks at the
+# outcome instead: VN30 closing bars, the market regime row, and a trading calendar seeded ahead.
+FRESHNESS_TRIGGER = (11, 30)
+CALENDAR_AHEAD_DAYS = 30
+
+
+def freshness_problems(conn, today: date) -> list[str]:
+    problems = []
+    vn30 = get_vn30_tickers(conn)
+    completeness = check_daily_completeness(conn, vn30, today)
+    if completeness.result == "fail":
+        missing = completeness.detail["missing_tickers"]
+        problems.append(f"{len(missing)}/{len(vn30)} mã VN30 thiếu giá phiên {today:%d/%m}: {', '.join(missing)}")
+    if conn.execute("SELECT 1 FROM market_regime_daily WHERE trade_date = %s", (today,)).fetchone() is None:
+        problems.append(f"chưa có market_regime_daily phiên {today:%d/%m}")
+    if not calendar_covers(conn, today + timedelta(days=CALENDAR_AHEAD_DAYS)):
+        problems.append(f"trading_calendar hết dữ liệu trong vòng {CALENDAR_AHEAD_DAYS} ngày tới, cần seed thêm")
+    return problems
+
+
+def _run_freshness_check_if_due(conn, now: datetime, already_fired_today: set[str]) -> None:
+    fired_key = f"freshness:{now.date().isoformat()}"
+    if fired_key in already_fired_today or (now.hour, now.minute) < FRESHNESS_TRIGGER:
+        return
+    already_fired_today.add(fired_key)
+    today = now.astimezone(_VN_TZ).date()
+    try:
+        if not is_trading_day(conn, today):
+            return
+    except NoCalendarDataError:
+        send_ops_alert(f"[dữ liệu {today:%d/%m}] trading_calendar không có ngày hôm nay, cần seed thêm")
+        return
+    problems = freshness_problems(conn, today)
+    log_event("freshness_checked", date=today.isoformat(), problems=problems)
+    if problems:
+        send_ops_alert(f"[dữ liệu {today:%d/%m}] " + "; ".join(problems)[:1500])
 
 
 # RSS news collection: one market-wide job per hour from 06:00 VN, every day (news does not stop at the
@@ -234,6 +274,7 @@ def run_due_jobs(conn, now: datetime, already_fired_today: set[str]) -> None:
     _run_market_job_if_due(conn, now, already_fired_today, CLOSE_SYNC_RETRY_JOB_TYPE, CLOSE_SYNC_RETRY_TRIGGER)
     _run_collect_if_due(conn, now, already_fired_today)
     _run_alert_check_if_due(conn, now, already_fired_today)
+    _run_freshness_check_if_due(conn, now, already_fired_today)
 
 
 def _run_weekly_if_due(conn, now: datetime, already_fired_today: set[str]) -> None:
