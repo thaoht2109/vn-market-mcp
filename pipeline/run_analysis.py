@@ -168,7 +168,7 @@ def run_analysis(
         "SELECT count(*), max(trade_date) FROM prices_daily WHERE ticker = %s", (ticker,)
     ).fetchone()
     if stored_days >= rules["coverage"]["min_price_history_days"]:
-        start = last_stored
+        start = min(last_stored, trading_date)  # a stale calendar must not put start after end
     else:
         start = trading_date - timedelta(days=HISTORY_BACKFILL_DAYS)
     outcomes = [ingest_ticker_day(conn, provider, ticker, trading_date, start=start)]

@@ -17,7 +17,7 @@ from llm.config import ModelsConfig
 from llm.macro import MACRO_JOB_TYPE, MacroDigestValidationError, run_macro_daily
 from mcp_server.connection import get_rw_conn
 from ops.alerting import log_event, send_ops_alert
-from ops.scheduler import CLOSE_SYNC_JOB_TYPES, get_vn30_tickers
+from ops.scheduler import CLOSE_SYNC_JOB_TYPES, CLOSE_SYNC_RETRY_JOB_TYPE, get_vn30_tickers
 from pipeline.collectors.rss import run_collect_rss
 from pipeline.collectors.indicators import run_all as collect_indicators
 from pipeline.ingest import sync_recent_prices
@@ -85,6 +85,9 @@ def _run_close_sync(conn, job_key: str) -> None:
     failed = [f"{o.ticker}: {o.detail}" for o in outcomes if o.status == "error"]
     rebased = [o.ticker for o in outcomes if o.detail and o.detail.startswith("rebased")]
     log_event("close_sync_done", synced=len(outcomes) - len(failed), rebased=rebased, failed=failed)
+    if failed and job_key.startswith(CLOSE_SYNC_RETRY_JOB_TYPE):  # last attempt of the day: say so
+        send_ops_alert(f"[close_sync {today:%d/%m}] {len(failed)} mã chưa có giá đóng cửa sau lần thử lại: "
+                       + "; ".join(failed)[:1500])
     # Closing prices are final now: "confirmed" alerts. The 18:00 retry re-runs this for the
     # tickers it fixed; already-sent conditions don't repeat (edge state + UNIQUE key).
     settled = [o.ticker for o in outcomes if o.status != "error"]
