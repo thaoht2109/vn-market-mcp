@@ -123,7 +123,7 @@ def freshness_problems(conn, today: date) -> list[str]:
     if conn.execute("SELECT 1 FROM market_regime_daily WHERE trade_date = %s", (today,)).fetchone() is None:
         problems.append(f"chưa có market_regime_daily phiên {today:%d/%m}")
     if not calendar_covers(conn, today + timedelta(days=CALENDAR_AHEAD_DAYS)):
-        problems.append(f"trading_calendar hết dữ liệu trong vòng {CALENDAR_AHEAD_DAYS} ngày tới, cần seed thêm")
+        problems.append(f"trading_calendar hết dữ liệu trong vòng {CALENDAR_AHEAD_DAYS} ngày tới, chạy python -m ops.seed_calendar <năm>")
     return problems
 
 
@@ -137,7 +137,7 @@ def _run_freshness_check_if_due(conn, now: datetime, already_fired_today: set[st
         if not is_trading_day(conn, today):
             return
     except NoCalendarDataError:
-        send_ops_alert(f"[dữ liệu {today:%d/%m}] trading_calendar không có ngày hôm nay, cần seed thêm")
+        send_ops_alert(f"[dữ liệu {today:%d/%m}] trading_calendar không có ngày hôm nay, chạy python -m ops.seed_calendar <năm>")
         return
     problems = freshness_problems(conn, today)
     log_event("freshness_checked", date=today.isoformat(), problems=problems)
