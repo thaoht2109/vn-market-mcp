@@ -180,3 +180,14 @@ def test_the_etag_is_only_remembered_after_the_items_were_stored(db_conn, monkey
     assert URL_A not in rss._cache  # a remembered ETag would turn the retry into a 304 and lose these items
     monkeypatch.setattr(rss, "store_news_item", real_store)
     assert run(db_conn, monkeypatch, srcs(("test_cafef", "A", URL_A)), c, now=NOW + timedelta(minutes=61))["stored"] == 5
+
+
+def test_a_two_digit_utc_offset_is_read_not_replaced_by_fetch_time():
+    # cafebiz writes "+07"; feedparser leaves published_parsed None, and the fetch time made every
+    # re-listed article look new again a week later (outside the URL dedup window).
+    xml = ('<?xml version="1.0"?><rss version="2.0"><channel><title>t</title><link>http://x</link>'
+           '<description>d</description><item><title>Tin vĩ mô</title><link>http://cafebiz.test/a</link>'
+           '<pubDate>Thu, 22 Oct 2026 10:36:00 +07</pubDate></item></channel></rss>').encode()
+    fetched = datetime(2026, 10, 22, 4, 0, tzinfo=timezone.utc)
+    [item] = rss.parse_entries(xml, fetched)
+    assert item["published_at"] == datetime(2026, 10, 22, 3, 36, tzinfo=timezone.utc)

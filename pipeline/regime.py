@@ -23,6 +23,11 @@ LOOKBACK_DAYS = 400
 # Reuse a stored VN-Index row this long before refetching (cron refreshes every 2 h).
 MAX_AGE = timedelta(minutes=60)
 
+# Breadth over a VN30 half-refreshed for `as_of` is wrong, not partial: at 09:30 the first ticker's run
+# saw only its own bar and stored "0 up / 0 down / 0% above MA50" for an hour. Below this share, None.
+# ponytail: 90% tolerates a suspended member or two; at 11:00 the other bars may still be 09:30 ones.
+BREADTH_MIN_COVERAGE = 0.9
+
 
 def market_snapshot(provider, as_of: date) -> dict:
     """VN-Index state + regime. Regime fails open to risk_on (never blocks
@@ -54,7 +59,15 @@ _VN30 = "SELECT ticker FROM index_membership WHERE index_code = 'VN30' AND (vali
 
 
 def market_breadth(conn, as_of: date, now: datetime) -> dict:
-    """Advancers/decliners, share above MA50 and liquidity vs the 20-session mean, over VN30."""
+    """Advancers/decliners, share above MA50 and liquidity vs the 20-session mean, over VN30.
+    All None until BREADTH_MIN_COVERAGE of VN30 has a bar for `as_of`."""
+    unknown = {"advancers": None, "decliners": None, "pct_above_ma50": None, "liquidity_ratio": None}
+    have, members = conn.execute(
+        f"SELECT count(*) FILTER (WHERE ticker IN (SELECT ticker FROM prices_daily WHERE trade_date = %s)), count(*)"
+        f" FROM ({_VN30}) v", (as_of,),
+    ).fetchone()
+    if not members or have / members < BREADTH_MIN_COVERAGE:
+        return unknown
     adv, dec, above = conn.execute(
         f"""
         WITH t AS (
@@ -97,6 +110,15 @@ def get_market_context(conn, provider, as_of: date, now: datetime, max_age: time
         keys = ("index_symbol", "close", "change_pct", "ma20", "ma50", "ma200", "rsi14", "trend", "regime",
                 "computed_at", "advancers", "decliners", "pct_above_ma50", "liquidity_ratio")
         ctx = {k: (float(v) if isinstance(v, Decimal) else v) for k, v in zip(keys, row) if k != "computed_at"}
+        if ctx["advancers"] is None:  # breadth was unknown when the row was stored: retry it (DB only, no vnstock call)
+            breadth = market_breadth(conn, as_of, now)
+            if breadth["advancers"] is not None:
+                conn.execute(
+                    "UPDATE market_regime_daily SET advancers = %s, decliners = %s, pct_above_ma50 = %s,"
+                    " liquidity_ratio = %s WHERE trade_date = %s",
+                    (breadth["advancers"], breadth["decliners"], breadth["pct_above_ma50"], breadth["liquidity_ratio"], as_of),
+                )
+                ctx.update(breadth)
     else:
         ctx = {**market_snapshot(provider, as_of), **market_breadth(conn, as_of, now)}
         conn.execute(
