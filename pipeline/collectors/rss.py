@@ -9,6 +9,7 @@ import html
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 
 import feedparser
@@ -64,6 +65,19 @@ def _get(client: httpx.Client, url: str) -> httpx.Response:
     raise FeedError(str(last))
 
 
+def _published(e) -> datetime | None:
+    stamp = e.get("published_parsed") or e.get("updated_parsed")
+    if stamp:
+        return datetime(*stamp[:6], tzinfo=timezone.utc)
+    # feedparser gives up on a two-digit offset ("Thu, 22 Oct 2026 10:36:00 +07", cafebiz)
+    raw = re.sub(r" ([+-]\d\d)$", r" \g<1>00", (e.get("published") or e.get("updated") or "").strip())
+    try:
+        parsed = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else None
+
+
 def parse_entries(content: bytes, fetched_at: datetime) -> list[dict]:
     feed = feedparser.parse(content)
     if not feed.entries and not feed.version:  # no feed at all, e.g. an HTML block page served with 200
@@ -73,7 +87,7 @@ def parse_entries(content: bytes, fetched_at: datetime) -> list[dict]:
         title = html.unescape((e.get("title") or "").strip())
         if not title:
             continue
-        stamp = e.get("published_parsed") or e.get("updated_parsed")
+        published = _published(e)
         summary = html.unescape(re.sub(r"<[^>]+>", " ", e.get("summary") or ""))
         items.append({
             "title": title,
@@ -81,7 +95,7 @@ def parse_entries(content: bytes, fetched_at: datetime) -> list[dict]:
             "summary": re.sub(r"\s+", " ", summary).strip() or None,
             # no date, or a date in the future (a typo, e.g. year 2062 has no partition and would sit on top of
             # every pillar list): the fetch time is the best honest answer
-            "published_at": min(datetime(*stamp[:6], tzinfo=timezone.utc), fetched_at) if stamp else fetched_at,
+            "published_at": min(published, fetched_at) if published else fetched_at,
         })
     return items
 

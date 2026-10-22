@@ -107,3 +107,25 @@ def test_market_breadth_counts_vn30_advancers_above_ma50_and_final_liquidity(db_
 
     mid_session = datetime(2020, 3, 27, 3, 0, tzinfo=timezone.utc)   # 10:00 VN: partial value must not be compared
     assert market_breadth(db_conn, as_of, mid_session)["liquidity_ratio"] is None
+
+    # Half of VN30 refreshed for as_of (the 09:30 case): breadth is unknown, not "0 up / 0 down".
+    db_conn.execute("DELETE FROM prices_daily WHERE ticker = 'BRDN' AND trade_date = %s", (as_of,))
+    assert market_breadth(db_conn, as_of, after_close)["advancers"] is None
+
+
+def test_unknown_breadth_in_a_reused_row_is_filled_in_once_vn30_has_bars(db_conn, monkeypatch):
+    from datetime import datetime, timezone
+    import pipeline.regime as regime
+
+    today = date(2026, 9, 30)
+    provider = _StubIndexProvider(_index_df([1500.0 - i for i in range(250)], today))
+    now = datetime(2026, 9, 30, 2, 30, tzinfo=timezone.utc)
+    breadth = {"advancers": None, "decliners": None, "pct_above_ma50": None, "liquidity_ratio": None}
+    monkeypatch.setattr(regime, "market_breadth", lambda conn, as_of, now: dict(breadth))
+
+    assert regime.get_market_context(db_conn, provider, today, now)["advancers"] is None
+    breadth.update(advancers=20, decliners=9, pct_above_ma50=0.6)
+    ctx = regime.get_market_context(db_conn, provider, today, now.replace(minute=40))  # reused row
+    assert (ctx["advancers"], ctx["decliners"]) == (20, 9)
+    row = db_conn.execute("SELECT advancers FROM market_regime_daily WHERE trade_date = %s", (today,)).fetchone()
+    assert row[0] == 20

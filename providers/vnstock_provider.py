@@ -141,6 +141,17 @@ class NewsItem:
     fetched_at: datetime
 
 
+class EmptyResponseError(ConnectionError):
+    """vnstock logs a network failure and returns an empty frame for some calls (price board,
+    listing) instead of raising; an empty answer to a non-empty question is that failure."""
+
+
+def _require_rows(df: pd.DataFrame, what: str) -> pd.DataFrame:
+    if df is None or len(df) == 0:
+        raise EmptyResponseError(f"vnstock trả về rỗng cho {what} (lỗi mạng?)")
+    return df
+
+
 class VNStockProvider:
     """Thin wrapper around vnstock.api (the post-2025-08-31 API; the old
     Vnstock().stock(...).quote/finance/trading/company facade is deprecated
@@ -189,6 +200,12 @@ class VNStockProvider:
         # only exist on the KBS price board, not VCI — independent of self.source.
         return Trading(source="KBS")
 
+    def _board(self, tickers: list[str]) -> pd.DataFrame:
+        if not tickers:
+            return pd.DataFrame()
+        self._throttle()
+        return _require_rows(self._trading().price_board(symbols_list=tickers), "bảng giá")
+
     def lookup_listing(self, ticker: str) -> tuple[str, str] | None:
         """(name, exchange) if `ticker` is listed on HOSE/HNX/UPCoM, else None."""
         if "listing" in self._clients:
@@ -198,7 +215,7 @@ class VNStockProvider:
 
             listing = Listing()
         self._throttle()
-        df = listing.symbols_by_exchange()
+        df = _require_rows(listing.symbols_by_exchange(), "danh sách niêm yết")
         rows = df[df["symbol"] == ticker]
         if rows.empty:
             return None
@@ -298,11 +315,9 @@ class VNStockProvider:
         check all watched tickers every 15 min, so one call per ticker would burn the rate limit.
         A ticker with no match yet (price 0) is left out."""
         # ponytail: one request for the whole list; chunk it if KBS ever caps the board size.
-        self._throttle()
-        board = self._trading().price_board(symbols_list=tickers)
         return {
             str(row["symbol"]): float(row["close_price"])
-            for row in board.to_dict("records") if row.get("close_price")
+            for row in self._board(tickers).to_dict("records") if row.get("close_price")
         }
 
     def get_foreign_flow(self, ticker: str, start: date, end: date) -> list[ForeignFlowRecord]:
@@ -313,7 +328,10 @@ class VNStockProvider:
         callers get a single record for "now" and must upsert daily to build
         history (ponytail: no backfill possible, only accrues going forward).
         """
-        return self.get_foreign_flow_board([ticker]).get(ticker, [])
+        try:
+            return self.get_foreign_flow_board([ticker]).get(ticker, [])
+        except EmptyResponseError:  # secondary data for one in-session run: no flow beats failing the analysis
+            return []
 
     def get_foreign_flow_history(self, ticker: str, start: date, end: date) -> list[ForeignFlowRecord]:
         """Settled per-day foreign flow from CafeF, for use after the close. get_foreign_flow above is only
@@ -324,8 +342,7 @@ class VNStockProvider:
     def get_foreign_flow_board(self, tickers: list[str]) -> dict[str, list[ForeignFlowRecord]]:
         """get_foreign_flow for many tickers in ONE price-board request (close_sync: one call, not 34)."""
         fetched_at = datetime.now(timezone.utc)
-        self._throttle()
-        board = self._trading().price_board(symbols_list=tickers)
+        board = self._board(tickers)
         out: dict[str, list[ForeignFlowRecord]] = {}
         for i, row in enumerate(board.to_dict("records")):
             ticker = str(row.get("symbol") or tickers[i])  # single-ticker boards may omit the symbol

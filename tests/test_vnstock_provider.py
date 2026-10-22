@@ -286,3 +286,23 @@ def test_normalize_fundamental_metrics_nulls_bank_only_zeros_and_nan():
     assert out["nim"] is None and out["npl_ratio"] is None  # vendor's 0 = not applicable
     assert out["roe"] == 0.3 and out["pe"] is None
     assert out["pb"] == 0.0  # only bank-only ratios are treated as not-applicable at 0
+
+
+def test_an_empty_price_board_or_listing_is_a_failure_not_an_empty_answer():
+    # vnstock logs a DNS failure and returns an empty frame here: {} would let alert_check finish "done"
+    # with no price checked, and an empty listing would answer "no such ticker" for a real one.
+    import pytest
+    from providers.vnstock_provider import EmptyResponseError
+
+    class _EmptyListing:
+        def symbols_by_exchange(self):
+            return pd.DataFrame()
+
+    provider = VNStockProvider(clients={"trading": _FakeTrading(pd.DataFrame()), "listing": _EmptyListing()})
+    with pytest.raises(EmptyResponseError):
+        provider.get_last_prices(["DGW"])
+    with pytest.raises(EmptyResponseError):
+        provider.get_foreign_flow_board(["DGW"])
+    with pytest.raises(EmptyResponseError):
+        provider.lookup_listing("DGW")
+    assert provider.get_last_prices([]) == {}
