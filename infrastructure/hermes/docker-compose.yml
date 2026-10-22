@@ -25,6 +25,7 @@ services:
       - ${HERMES_DATA_DIR:-${HOME:-/root}/.hermes}:/opt/data
       - ${VN_MARKET_MCP_DIR:-../..}:/opt/vn-market-mcp:ro
     restart: "no"
+    dns: [1.1.1.1, 8.8.8.8]  # see gateway
 
   # ---------------------------------------------------------------------------
   # Hermes Gateway — core agent runtime & API
@@ -43,6 +44,9 @@ services:
       - ${HERMES_DATA_DIR:-${HOME:-/root}/.hermes}:/opt/data
       - ${VN_MARKET_MCP_DIR:-../..}:/opt/vn-market-mcp:ro
     shm_size: 1g
+    # Pinned resolvers: Docker's DNS otherwise forwards to the host's, which can be Tailscale MagicDNS
+    # (100.100.100.100) and dies with tailscaled -> "can't reach the model provider" (2026-10-22).
+    dns: [1.1.1.1, 8.8.8.8]
     networks:
       - hermes-net
       - vn-market-mcp_default

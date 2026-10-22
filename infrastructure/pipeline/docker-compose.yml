@@ -16,6 +16,9 @@ x-app: &app
       PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
       PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-https://vnstocks.com/api/simple}
   network_mode: host
+  # Pinned public resolvers, not the host's: the host's resolv.conf can point at Tailscale MagicDNS (100.100.100.100),
+  # which dies with tailscaled and took every model/vnstock call down with it (2026-10-22).
+  dns: [1.1.1.1, 8.8.8.8]
   restart: ${RESTART_POLICY:-unless-stopped}
 
 services:
