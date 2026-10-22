@@ -18,7 +18,7 @@ x-app: &app
   network_mode: host
   # Pinned public resolvers, not the host's: the host's resolv.conf can point at Tailscale MagicDNS (100.100.100.100),
   # which dies with tailscaled and took every model/vnstock call down with it (2026-10-22).
-  dns: [1.1.1.1, 8.8.8.8]
+  dns: [8.8.8.8, 1.1.1.1]
   restart: ${RESTART_POLICY:-unless-stopped}
 
 services:
