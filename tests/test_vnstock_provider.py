@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pandas as pd
 import pytest
@@ -245,6 +245,24 @@ def test_get_news_filters_by_date_and_skips_untitled_rows():
     assert items[0].title == "GAS: Nghị quyết HĐQT"
     assert items[0].ticker == "GAS"
     assert items[0].summary is None  # Community tier: content fields are None in practice
+
+
+def test_get_news_reads_public_date_as_vietnam_time():
+    # vnstock gives VN local time without an offset: 17:13 in Hanoi is 10:13 UTC, same calendar day.
+    df = pd.DataFrame([{"news_title": "FPT: KQKD 9 tháng", "public_date": "2026-10-21T17:13:45", "news_source": "HOSE",
+                        "news_source_link": None, "news_short_content": None, "news_full_content": None}])
+    provider = VNStockProvider(source="VCI", clients={"company": _FakeCompany(news_df=df)})
+
+    item = provider.get_news("FPT", date(2026, 10, 21), date(2026, 10, 21))[0]
+
+    assert item.published_at.astimezone(timezone.utc) == datetime(2026, 10, 21, 10, 13, 45, tzinfo=timezone.utc)
+
+
+def test_get_market_index_passes_an_empty_frame_through():
+    # regime.market_snapshot fails open to risk_on on too little history; an empty frame must reach it.
+    provider = VNStockProvider(source="VCI", clients={"quote": _FakeQuote(pd.DataFrame())}, scale_map={"VCI": 1000})
+
+    assert provider.get_market_index("VNINDEX", date(2026, 10, 1), date(2026, 10, 20)).empty
 
 
 def test_get_news_falls_back_to_short_content_as_summary():

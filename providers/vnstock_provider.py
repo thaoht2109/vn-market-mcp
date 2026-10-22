@@ -5,11 +5,14 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yaml
 
 from providers.rate_limit import wait_for_slot
+
+_VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 _CONFIG_PATH = Path(__file__).parent.parent / "config" / "vn-rules.yaml"
 
@@ -217,19 +220,20 @@ class VNStockProvider:
         per-source VND scale factor (×1000 for VCI) doesn't apply to an
         index's point value, unlike get_ohlcv's per-ticker VND prices.
         """
+        return self._history(symbol, start, end).rename(columns={"time": "trade_date"})
+
+    def _history(self, symbol: str, start: date, end: date) -> pd.DataFrame:
+        """Quote.history() limited to [start, end]: vnstock ignores `end` and returns up to the latest
+        session, so a past as_of would see later days. An empty or column-less frame passes through."""
         self._throttle()
         raw = self._quote(symbol).history(symbol=symbol, start=start.isoformat(), end=end.isoformat())
-        raw = raw[raw["time"].map(_to_date) <= end]  # vnstock ignores `end`: a past as_of got later sessions
-        return raw.rename(columns={"time": "trade_date"})
+        return raw[raw["time"].map(_to_date) <= end] if len(raw) else raw
 
     def get_ohlcv(self, ticker: str, start: date, end: date) -> list[PriceBar]:
         fetched_at = datetime.now(timezone.utc)
-        self._throttle()
-        raw = self._quote(ticker).history(symbol=ticker, start=start.isoformat(), end=end.isoformat())
+        raw = self._history(ticker, start, end)
         bars = []
         for row in raw.to_dict("records"):
-            if _to_date(row["time"]) > end:  # vnstock ignores `end`, see get_market_index
-                continue
             close = normalize_price_unit(row["close"], self.source, self.scale_map)
             volume = int(row["volume"])
             # vnstock.api.quote.Quote.history() doesn't return a traded-value
@@ -360,7 +364,7 @@ class VNStockProvider:
             public_date = row.get("public_date")
             if public_date is None:
                 continue
-            published_at = datetime.fromisoformat(str(public_date)).replace(tzinfo=timezone.utc)
+            published_at = datetime.fromisoformat(str(public_date)).replace(tzinfo=_VN_TZ)  # VN local time, no offset
             if not (start <= published_at.date() <= end):
                 continue
             title = row.get("news_title")
